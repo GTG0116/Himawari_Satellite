@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>GOES-19 Satellite Viewer</title>
+    <title>Himawari-9 Satellite Viewer</title>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
@@ -109,8 +109,8 @@
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script>
-        // Initialize Map — centered on continental US
-        var map = L.map('map').setView([37, -95], 4);
+        // Initialize Map — centered on Himawari-9 full disk (Asia-Pacific)
+        var map = L.map('map').setView([20, 140], 3);
 
         // Dark base layer
         L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
@@ -119,9 +119,9 @@
             maxZoom: 19
         }).addTo(map);
 
-        // Image bounds — MUST match EXTENT in process_data.py: [-135, -60, 20, 55]
+        // Image bounds — MUST match EXTENT in process_data.py: [80, 200, -60, 60]
         // Leaflet format: [[south, west], [north, east]]
-        var imageBounds = [[20, -135], [55, -60]];
+        var imageBounds = [[-60, 80], [60, 200]];
         var imageUrl = 'data/';
 
         // Satellite overlay layers — always show the latest frame (_00)
@@ -132,7 +132,7 @@
 
         var overlayMaps = {
             "GeoColor (RGB)":       geocolorLayer,
-            "Visible (Band 2)":     visibleLayer,
+            "Visible (Band 3)":     visibleLayer,
             "Infrared (Band 13)":   infraredLayer,
             "Water Vapor (Band 9)": waterVaporLayer
         };
@@ -171,7 +171,7 @@
             // Matches _wv_colormap() in process_data.py (195 – 280 K)
             watervapor: {
                 title: 'Water Vapor — Band 9',
-                subtitle: 'Mid-Level Water Vapor (6.95 µm)',
+                subtitle: 'Mid-Level Water Vapor (6.9 µm)',
                 gradient: 'linear-gradient(to right,' +
                     '#00003c 0%,'   +   // 195 K
                     '#0000cc 18%,'  +   // ~210 K
@@ -189,7 +189,7 @@
 
             // Grayscale visible
             visible: {
-                title: 'Visible — Band 2',
+                title: 'Visible — Band 3',
                 subtitle: 'Red Visible (0.64 µm)',
                 gradient: 'linear-gradient(to right, #000000, #ffffff)',
                 ticks: ['0 %', '25 %', '50 %', '75 %', '100 %'],
