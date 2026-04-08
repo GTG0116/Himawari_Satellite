@@ -15,13 +15,15 @@ from scipy.ndimage import zoom
 OUTPUT_DIR = 'site/data'
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-BUCKET = 'noaa-goes19'
+BUCKET = 'noaa-himawari9'
 MAX_FRAMES = 10  # rolling frame buffer per product
+
+SAT_LON = 140.7  # Himawari-9 sub-satellite longitude (°E)
 
 # Geographic extent: [west_lon, east_lon, south_lat, north_lat]
 # This MUST match the imageBounds in site/index.html
-# GOES-19 CONUS sector extends to ~135.7°W; use -135 to capture the full west coast.
-EXTENT = [-135, -60, 20, 55]
+# Himawari-9 full disk: 80°E to 200°E (=160°W), 60°S to 60°N
+EXTENT = [80, 200, -60, 60]
 
 
 # ---------------------------------------------------------------------------
@@ -117,11 +119,11 @@ def shift_frames(product_base):
 # Helpers
 # ---------------------------------------------------------------------------
 
-def get_latest_goes_file(s3_client, band, domain='C'):
-    """Find the most recent GOES-19 ABI CMIP file for a given band.
+def get_latest_himawari_file(s3_client, band):
+    """Find the most recent Himawari-9 AHI CMIP Full Disk file for a given band.
 
     Searches backwards up to 6 hours to find the latest available file.
-    Domain 'C' = CONUS, 'F' = Full Disk, 'M' = Mesoscale.
+    Himawari-9 only provides Full Disk (CMIPF) products.
     """
     now = datetime.now(timezone.utc)
 
@@ -131,8 +133,8 @@ def get_latest_goes_file(s3_client, band, domain='C'):
         doy  = t.strftime('%j')
         hour = t.strftime('%H')
 
-        prefix   = f'ABI-L2-CMIP{domain}/{year}/{doy}/{hour}/'
-        band_str = f'C{band:02d}_G19'
+        prefix   = f'AHI-L2-CMIPF/{year}/{doy}/{hour}/'
+        band_str = f'C{band:02d}_H09'
 
         try:
             resp  = s3_client.list_objects_v2(Bucket=BUCKET, Prefix=prefix)
@@ -159,8 +161,11 @@ def _make_figure():
     fig_height = fig_width * lat_range / (lon_range * np.cos(np.radians(mid_lat)))
 
     fig = plt.figure(figsize=(fig_width, fig_height))
-    ax  = fig.add_axes([0, 0, 1, 1], projection=ccrs.PlateCarree())
-    ax.set_extent(EXTENT, crs=ccrs.PlateCarree())
+    # PlateCarree centred on SAT_LON handles the antimeridian crossing naturally
+    crs = ccrs.PlateCarree(central_longitude=SAT_LON)
+    ax  = fig.add_axes([0, 0, 1, 1], projection=crs)
+    # Convert geographic EXTENT to the rotated CRS coordinate space
+    ax.set_extent([EXTENT[0] - SAT_LON, EXTENT[1] - SAT_LON, EXTENT[2], EXTENT[3]], crs=crs)
     ax.set_aspect('auto')  # prevent Cartopy equal-aspect padding; image must fill extent exactly
     ax.set_axis_off()
     fig.patch.set_alpha(0.0)
@@ -169,19 +174,19 @@ def _make_figure():
 
 
 def _download_band(s3_client, band_num):
-    """Download a GOES-19 ABI band.
+    """Download a Himawari-9 AHI band.
 
-    Returns (data_array, x_metres, y_metres, goes_proj).
+    Returns (data_array, x_metres, y_metres, sat_proj).
     data_array contains raw float values with NaNs intact (no fill applied).
     Returns (None, None, None, None) on any failure.
     """
     print(f"  Downloading Band {band_num}...")
-    key = get_latest_goes_file(s3_client, band_num)
+    key = get_latest_himawari_file(s3_client, band_num)
     if key is None:
         print(f"  ERROR: No Band {band_num} data found in the last 6 hours.")
         return None, None, None, None
 
-    local_file = f'/tmp/goes_band{band_num}.nc'
+    local_file = f'/tmp/himawari_band{band_num}.nc'
     try:
         s3_client.download_file(BUCKET, key, local_file)
         ds = xr.open_dataset(local_file, engine='netcdf4')
@@ -218,19 +223,19 @@ def _download_band(s3_client, band_num):
 # ---------------------------------------------------------------------------
 
 def process_goes_band(s3_client, band, output_filename, colormap, vmin, vmax, gamma=1.0):
-    """Download and render a single GOES-19 ABI band as a transparent PNG.
+    """Download and render a single Himawari-9 AHI band as a transparent PNG.
 
     gamma – optional power-law correction applied after normalising to [0, 1].
             gamma < 1 brightens the image (e.g. 0.5 = square-root stretch).
     """
     print(f"\n--- Band {band}: {output_filename} ---")
 
-    key = get_latest_goes_file(s3_client, band)
+    key = get_latest_himawari_file(s3_client, band)
     if key is None:
         print(f"  ERROR: No Band {band} data found in the last 6 hours. Skipping.")
         return
 
-    local_file = f'/tmp/goes_band{band}.nc'
+    local_file = f'/tmp/himawari_band{band}.nc'
     try:
         print(f"  Downloading...")
         s3_client.download_file(BUCKET, key, local_file)
@@ -297,7 +302,7 @@ def process_goes_band(s3_client, band, output_filename, colormap, vmin, vmax, ga
 def process_geocolor(s3_client):
     """GeoColor RGB composite.
 
-    Daytime  – pseudo-natural colour from Bands 1 and 2 with gamma correction.
+    Daytime  – pseudo-natural colour from Bands 1 and 3 with gamma correction.
     Nighttime – IR cloud layer (Band 13) blended with city-lights proxy
                 (Band 7 minus thermal background) on a transparent background.
     """
@@ -309,12 +314,12 @@ def process_geocolor(s3_client):
         print("  ERROR: Missing Band 1. Skipping GeoColor.")
         return
 
-    b2, x2, y2, _ = _download_band(s3_client, 2)
+    b2, x2, y2, _ = _download_band(s3_client, 3)
     if b2 is None:
-        print("  ERROR: Missing Band 2. Skipping GeoColor.")
+        print("  ERROR: Missing Band 3. Skipping GeoColor.")
         return
 
-    # Band 2 is 0.5 km (2× resolution) – downsample to match Band 1 (1 km)
+    # Band 3 is 0.5 km (2× resolution) – downsample to match Band 1 (1 km)
     b2 = np.nan_to_num(b2, nan=0.0)
     if b2.shape != b1.shape:
         zy = b1.shape[0] / b2.shape[0]
@@ -323,10 +328,10 @@ def process_geocolor(s3_client):
 
     b1 = np.nan_to_num(b1, nan=0.0)
 
-    # Determine day vs night: at night Band 2 visible reflectance ≈ 0
+    # Determine day vs night: at night Band 3 visible reflectance ≈ 0
     mean_ref = float(np.nanmean(b2))
     is_daytime = mean_ref > 0.05
-    print(f"  Band 2 mean reflectance: {mean_ref:.4f}  →  {'DAYTIME' if is_daytime else 'NIGHTTIME'}")
+    print(f"  Band 3 mean reflectance: {mean_ref:.4f}  →  {'DAYTIME' if is_daytime else 'NIGHTTIME'}")
 
     if is_daytime:
         # Fetch Band 13 for cloud-top enhancement (failure is non-fatal)
@@ -339,6 +344,7 @@ def process_geocolor(s3_client):
 def _render_geocolor_day(b1, b2, x, y, goes_proj, bt13=None):
     """Pseudo-natural colour composite for daytime.
 
+    b1 = Band 1 (0.47 µm blue), b2 = Band 3 (0.64 µm red).
     bt13 is an optional Band 13 brightness-temperature array (same spatial
     footprint after resampling).  When provided, very cold cloud tops are
     blended towards bright white so deep convective anvils are clearly
@@ -478,28 +484,28 @@ def _render_geocolor_night(s3_client):
 # ---------------------------------------------------------------------------
 
 def main():
-    print("GOES-19 Satellite Image Processor")
+    print("Himawari-9 Satellite Image Processor")
     print("=" * 40)
     print(f"Extent: {EXTENT}")
     print(f"Bucket: s3://{BUCKET}")
 
-    # Anonymous access — GOES-19 bucket is publicly readable
+    # Anonymous access — Himawari-9 bucket is publicly readable
     s3 = boto3.client(
         's3',
         region_name='us-east-1',
         config=Config(signature_version=UNSIGNED)
     )
 
-    # Band 2  — Visible (0.64 µm)              reflectance [0.0 – 1.0]
+    # Band 3  — Red Visible (0.64 µm)          reflectance [0.0 – 1.0]
     # 'gray' maps 0→black (clear sky) and 1→white (bright cloud).
     # gamma=0.5 (square-root stretch) matches conventional satellite display.
-    process_goes_band(s3, 2,  'visible.png',  'gray',        vmin=0.0, vmax=1.0, gamma=0.5)
+    process_goes_band(s3, 3,  'visible.png',  'gray',        vmin=0.0, vmax=1.0, gamma=0.5)
 
-    # Band 13 — Clean IR Longwave (10.35 µm)   brightness temp [K]
+    # Band 13 — Clean IR Longwave (10.4 µm)    brightness temp [K]
     # Custom NWS-style rainbow: cold tops → red/orange, warm surface → dark blue/black
     process_goes_band(s3, 13, 'infrared.png', _ir_colormap(), vmin=190, vmax=310)
 
-    # Band 9  — Mid-Level Water Vapor (6.95 µm) brightness temp [K]
+    # Band 9  — Mid-Level Water Vapor (6.9 µm)  brightness temp [K]
     # Custom enhancement: cold/moist → navy/blue, warm/dry → orange/red
     process_goes_band(s3, 9,  'water_vapor.png', _wv_colormap(), vmin=195, vmax=280)
 
