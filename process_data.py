@@ -26,6 +26,18 @@ SAT_LON = 140.7  # Himawari-9 sub-satellite longitude (°E)
 # Himawari-9 full disk: 80°E to 200°E (=160°W), 60°S to 60°N
 EXTENT = [80, 200, -60, 60]
 
+# Maximum pixels per dimension after loading a band.
+# Our output figure is 12 in × 300 DPI = 3 600 px wide, so 2 750 px input
+# is already more than enough and keeps each band under ~30 MB of RAM.
+# Band 3 (0.5 km, 11 000×11 000) is downsampled 4× to ~2 750×2 750;
+# 2 km bands (5 500×5 500) are halved to ~2 750×2 750.
+MAX_BAND_PX = 2750
+
+# Module-level cache so each band is downloaded and loaded only once per run,
+# even if it is needed by multiple products (e.g. Band 13 for both the IR
+# product and the GeoColor cloud-top enhancement).
+_band_cache: dict = {}
+
 
 # ---------------------------------------------------------------------------
 # Custom colour maps
@@ -170,10 +182,19 @@ def _make_figure():
 def _download_band(s3_client, band_num, scan_time):
     """Download all HSD segments for a Himawari-9 AHI band and load with satpy.
 
+    Results are cached for the lifetime of the process so that bands shared
+    between products (Band 3 for visible + GeoColor, Band 13 for IR + GeoColor)
+    are only downloaded and decoded once.
+
     Returns (data_array, x_metres, y_metres, sat_proj).
     data_array contains calibrated float32 values (reflectance or BT) with NaN
     for off-Earth pixels.  Returns (None, None, None, None) on any failure.
     """
+    cache_key = (band_num, scan_time)
+    if cache_key in _band_cache:
+        print(f'  Band {band_num}: using cached data')
+        return _band_cache[cache_key]
+
     year, month, day, hhmm = scan_time
     prefix   = f'AHI-L1b-FLDK/{year}/{month}/{day}/{hhmm}/'
     band_tag = f'_B{band_num:02d}_'
@@ -202,7 +223,7 @@ def _download_band(s3_client, band_num, scan_time):
             local = os.path.join(tmpdir, fname)
             s3_client.download_file(BUCKET, key, local)
             local_files.append(local)
-        print(f'    {len(local_files)} segments')
+        print(f'    {len(local_files)} segments downloaded')
 
         band_name = f'B{band_num:02d}'
         scn = Scene(filenames=local_files, reader='ahi_hsd')
@@ -212,6 +233,16 @@ def _download_band(s3_client, band_num, scan_time):
         area    = ds.attrs['area']
         left, bottom, right, top = area.area_extent
         n_rows, n_cols = arr.shape
+
+        # Downsample high-resolution bands to stay within MAX_BAND_PX.
+        # Band 3 (0.5 km) is 11 000×11 000 ≈ 484 MB; downsampled 4× → ~30 MB.
+        # 2 km bands (5 500×5 500) are halved → ~30 MB.
+        # Our output figure is 3 600 px wide, so 2 750 px input is plenty.
+        if max(n_rows, n_cols) > MAX_BAND_PX:
+            scale = MAX_BAND_PX / max(n_rows, n_cols)
+            arr   = zoom(arr, scale, order=1)
+            n_rows, n_cols = arr.shape
+
         x = np.linspace(left, right, n_cols)
         y = np.linspace(top, bottom, n_rows)  # decreasing: top → bottom
 
@@ -220,7 +251,10 @@ def _download_band(s3_client, band_num, scan_time):
 
         v_min, v_max = float(np.nanmin(arr)), float(np.nanmax(arr))
         print(f'  Band {band_num}: shape={arr.shape}, range=[{v_min:.2f}, {v_max:.2f}]')
-        return arr, x, y, sat_proj
+
+        result = (arr, x, y, sat_proj)
+        _band_cache[cache_key] = result
+        return result
 
     except Exception as e:
         print(f'  ERROR loading Band {band_num}: {e}')
