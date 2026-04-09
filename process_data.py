@@ -284,14 +284,86 @@ def _download_band(s3_client, band_num, scan_time):
 
 
 # ---------------------------------------------------------------------------
+# Solar zenith angle correction
+# ---------------------------------------------------------------------------
+
+def _compute_cos_sza(x, y, sat_proj, scan_time):
+    """Return cos(solar zenith angle) for each pixel in the satellite data grid.
+
+    Computation is performed on a coarse sub-sampled grid (≈ 350×350 points)
+    using Cartopy's geostationary→PlateCarree transform, then bilinearly
+    upsampled to the full data resolution.  This avoids converting millions
+    of points through Cartopy while keeping the smooth SZA field accurate.
+
+    Returns a float32 array of shape (len(y), len(x)).
+    Night-side and off-disk pixels are 0.0; zenith (sun directly overhead) is 1.0.
+    """
+    year, month, day, hhmm = scan_time
+    dt  = datetime(int(year), int(month), int(day),
+                   int(hhmm[:2]), int(hhmm[2:]), tzinfo=timezone.utc)
+    utc_hours = dt.hour + dt.minute / 60.0
+
+    # Solar declination — Spencer (1971) approximation (±0.3° accuracy)
+    doy = dt.timetuple().tm_yday
+    B   = 2.0 * np.pi * (doy - 1) / 365.0
+    dec = (0.006918
+           - 0.399912 * np.cos(B)    + 0.070257 * np.sin(B)
+           - 0.006758 * np.cos(2*B)  + 0.000907 * np.sin(2*B))
+
+    # Equation of time in hours (same source)
+    eot = ((0.000075
+            + 0.001868 * np.cos(B)   - 0.032077 * np.sin(B)
+            - 0.014615 * np.cos(2*B) - 0.04089  * np.sin(2*B))
+           * (12.0 / np.pi))
+
+    # Work on a coarse grid for speed
+    stride  = max(1, len(x) // 350)
+    x_ds    = x[::stride]
+    y_ds    = y[::stride]
+    xx, yy  = np.meshgrid(x_ds, y_ds)
+
+    # Geostationary → geographic (PlateCarree)
+    pc   = ccrs.PlateCarree()
+    pts  = pc.transform_points(sat_proj, xx.ravel(), yy.ravel())
+    lons = pts[:, 0].reshape(yy.shape)   # degrees east
+    lats = pts[:, 1].reshape(yy.shape)   # degrees north
+
+    # Hour angle at each pixel
+    tst = utc_hours + lons / 15.0 + eot          # true solar time (hours)
+    ha  = np.radians((tst - 12.0) * 15.0)        # hour angle (radians)
+
+    lat_r   = np.radians(lats)
+    cos_sza = (np.sin(lat_r) * np.sin(dec)
+               + np.cos(lat_r) * np.cos(dec) * np.cos(ha))
+
+    # Night-side and off-disk (NaN lon/lat) → 0
+    cos_sza = np.where(np.isnan(cos_sza), 0.0, cos_sza)
+    cos_sza = np.maximum(cos_sza, 0.0).astype(np.float32)
+
+    # Upsample back to full data resolution with bilinear interpolation
+    if cos_sza.shape != (len(y), len(x)):
+        scale_y = len(y) / cos_sza.shape[0]
+        scale_x = len(x) / cos_sza.shape[1]
+        cos_sza = zoom(cos_sza, (scale_y, scale_x), order=1)
+
+    return np.clip(cos_sza, 0.0, 1.0).astype(np.float32)
+
+
+# ---------------------------------------------------------------------------
 # Single-band renderer
 # ---------------------------------------------------------------------------
 
-def process_goes_band(s3_client, band, scan_time, output_filename, colormap, vmin, vmax, gamma=1.0):
+def process_goes_band(s3_client, band, scan_time, output_filename, colormap,
+                      vmin, vmax, gamma=1.0, sun_correct=False):
     """Download and render a single Himawari-9 AHI band as a transparent PNG.
 
-    gamma – optional power-law correction applied after normalising to [0, 1].
-            gamma < 1 brightens the image (e.g. 0.5 = square-root stretch).
+    gamma       – power-law correction applied after normalising to [0, 1].
+                  gamma < 1 brightens the image (e.g. 0.5 = square-root).
+    sun_correct – if True, multiply the data by cos(solar zenith angle) before
+                  gamma.  This converts satellite-measured apparent reflectance
+                  (which blows up near the terminator because it is divided by
+                  cos SZA) back to approximate physical albedo, eliminating the
+                  blinding-white terminator wave.
     """
     print(f"\n--- Band {band}: {output_filename} ---")
 
@@ -299,6 +371,12 @@ def process_goes_band(s3_client, band, scan_time, output_filename, colormap, vmi
     if cmi_data is None:
         print(f"  Skipping {output_filename}.")
         return
+
+    # Solar zenith correction: restore physical albedo from apparent reflectance
+    if sun_correct:
+        cos_sza  = _compute_cos_sza(x, y, sat_proj, scan_time)
+        cmi_data = cmi_data * cos_sza
+        print(f"  Solar zenith correction applied; mean cos(SZA) = {float(cos_sza.mean()):.3f}")
 
     # Apply gamma correction if requested (normalise → gamma → restore range)
     if gamma != 1.0:
@@ -364,12 +442,12 @@ def process_geocolor(s3_client, scan_time):
     if is_daytime:
         # Fetch Band 13 for cloud-top enhancement (failure is non-fatal)
         bt13, *_ = _download_band(s3_client, 13, scan_time)
-        _render_geocolor_day(b1, b2, x1, y1, goes_proj, bt13)
+        _render_geocolor_day(b1, b2, x1, y1, goes_proj, bt13, scan_time=scan_time)
     else:
         _render_geocolor_night(s3_client, scan_time)
 
 
-def _render_geocolor_day(b1, b2, x, y, goes_proj, bt13=None):
+def _render_geocolor_day(b1, b2, x, y, goes_proj, bt13=None, scan_time=None):
     """Pseudo-natural colour composite for daytime.
 
     b1 = Band 1 (0.47 µm blue), b2 = Band 3 (0.64 µm red).
@@ -377,7 +455,16 @@ def _render_geocolor_day(b1, b2, x, y, goes_proj, bt13=None):
     footprint after resampling).  When provided, very cold cloud tops are
     blended towards bright white so deep convective anvils are clearly
     visible against land/ocean backgrounds.
+    scan_time is required for the solar zenith angle correction.
     """
+    # Solar zenith angle correction: convert apparent reflectance → physical
+    # albedo so that the near-terminator region fades naturally rather than
+    # blowing out to white.
+    if scan_time is not None:
+        cos_sza = _compute_cos_sza(x, y, goes_proj, scan_time)
+        b1 = b1 * cos_sza
+        b2 = b2 * cos_sza
+
     R = np.clip(b2, 0, 1)
     # Synthetic green: average of red and blue channels only.
     # Omitting NIR (Band 3 / 0.86 µm) prevents the yellow cast that NIR
@@ -385,18 +472,19 @@ def _render_geocolor_day(b1, b2, x, y, goes_proj, bt13=None):
     G = np.clip(0.5 * b2 + 0.5 * b1, 0, 1)
     B = np.clip(b1, 0, 1)
 
-    # Gamma correction for natural brightness.
-    # 0.7 gives a moderate stretch: dark ocean/land is still visible while
-    # bright clouds don't blow out to pure white the way 0.5 (sqrt) does.
-    gamma = 0.7
+    # Gamma correction — with SZA-corrected physical albedos the data is in
+    # the natural [0, 1] range so gamma=0.6 gives a pleasant stretch without
+    # blowing out clouds or ocean sun glint.
+    gamma = 0.6
     R = np.power(R, gamma)
     G = np.power(G, gamma)
     B = np.power(B, gamma)
 
     # --- Cloud enhancement via Band 13 IR ---
     # Only very cold tops (< 235 K — deep convection, thick cirrus anvils) are
-    # blended toward bright white.  Warm low/mid clouds are left as-is so the
-    # rest of the image doesn't get washed out.
+    # blended toward bright white.  The enhancement is attenuated near the
+    # solar terminator (cos_sza < 0.15) so dark twilight pixels don't
+    # accidentally get brightened by a cold cloud top.
     if bt13 is not None:
         bt13_f = np.where(np.isnan(bt13), 320.0, bt13)
         # Band 13 is 2 km; Band 1/3 composite is at 1 km – upsample to match
@@ -406,6 +494,10 @@ def _render_geocolor_day(b1, b2, x, y, goes_proj, bt13=None):
             bt13_f = zoom(bt13_f, (zy, zx), order=1)
         # 235 K → 0 (no enhancement); 190 K → 1 (pure-white deep convection)
         cloud_enhance = np.clip((235.0 - bt13_f) / 45.0, 0.0, 1.0)
+        # Fade enhancement to zero near the terminator
+        if scan_time is not None:
+            lit = np.clip(cos_sza / 0.15, 0.0, 1.0)
+            cloud_enhance = cloud_enhance * lit
         strength = 0.50
         R = np.clip(R + cloud_enhance * (1.0 - R) * strength, 0.0, 1.0)
         G = np.clip(G + cloud_enhance * (1.0 - G) * strength, 0.0, 1.0)
@@ -535,9 +627,10 @@ def main():
         return
 
     # Band 3  — Red Visible (0.64 µm)          reflectance [0.0 – 1.0]
-    # 'gray' maps 0→black (clear sky) and 1→white (bright cloud).
-    # gamma=0.5 (square-root stretch) matches conventional satellite display.
-    process_goes_band(s3, 3,  scan_time, 'visible.png',     'gray',          vmin=0.0, vmax=1.0, gamma=0.7)
+    # sun_correct=True multiplies by cos(SZA) to remove the solar-zenith-angle
+    # normalisation, restoring physical albedo so the terminator zone fades
+    # naturally rather than blowing out to blinding white.
+    process_goes_band(s3, 3,  scan_time, 'visible.png',     'gray',          vmin=0.0, vmax=1.0, gamma=0.6, sun_correct=True)
 
     # Band 13 — Clean IR Longwave (10.4 µm)    brightness temp [K]
     # Custom NWS-style rainbow: cold tops → red/orange, warm surface → dark blue/black
