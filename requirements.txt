@@ -1,7 +1,6 @@
 boto3
-xarray
-netcdf4
 numpy
 matplotlib
 cartopy
 scipy
+satpy
