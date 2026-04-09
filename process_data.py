@@ -1,5 +1,5 @@
 import boto3
-import xarray as xr
+import shutil
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -11,6 +11,7 @@ from datetime import datetime, timezone, timedelta
 from botocore import UNSIGNED
 from botocore.config import Config
 from scipy.ndimage import zoom
+from satpy import Scene
 
 OUTPUT_DIR = 'site/data'
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -119,36 +120,29 @@ def shift_frames(product_base):
 # Helpers
 # ---------------------------------------------------------------------------
 
-def get_latest_himawari_file(s3_client, band):
-    """Find the most recent Himawari-9 AHI CMIP Full Disk file for a given band.
+def get_latest_scan_time(s3_client):
+    """Find the most recent available Himawari-9 scan (every 10 minutes).
 
-    Searches backwards up to 6 hours to find the latest available file.
-    Himawari-9 only provides Full Disk (CMIPF) products.
+    Returns (year, month, day, hhmm) as strings, or None if no data found
+    within the past 6 hours.
     """
     now = datetime.now(timezone.utc)
-
-    for hour_offset in range(6):
-        t = now - timedelta(hours=hour_offset)
-        year = t.strftime('%Y')
-        doy  = t.strftime('%j')
-        hour = t.strftime('%H')
-
-        prefix   = f'AHI-L2-CMIPF/{year}/{doy}/{hour}/'
-        band_str = f'C{band:02d}_H09'
-
+    for offset in range(0, 6 * 60, 10):  # search back up to 6 hours in 10-min steps
+        t = now - timedelta(minutes=offset)
+        # Round down to the nearest 10-minute boundary
+        t = t.replace(minute=(t.minute // 10) * 10, second=0, microsecond=0)
+        year  = t.strftime('%Y')
+        month = t.strftime('%m')
+        day   = t.strftime('%d')
+        hhmm  = t.strftime('%H%M')
+        prefix = f'AHI-L1b-FLDK/{year}/{month}/{day}/{hhmm}/'
         try:
-            resp  = s3_client.list_objects_v2(Bucket=BUCKET, Prefix=prefix)
-            files = [
-                obj['Key'] for obj in resp.get('Contents', [])
-                if band_str in obj['Key']
-            ]
-            if files:
-                latest = sorted(files)[-1]
-                print(f"  Found: {os.path.basename(latest)}")
-                return latest
+            resp = s3_client.list_objects_v2(Bucket=BUCKET, Prefix=prefix, MaxKeys=1)
+            if resp.get('Contents'):
+                print(f'  Latest scan: {year}/{month}/{day} {hhmm} UTC')
+                return year, month, day, hhmm
         except Exception as e:
-            print(f"  Warning: could not list {prefix}: {e}")
-
+            print(f'  Warning scanning {prefix}: {e}')
     return None
 
 
@@ -173,56 +167,76 @@ def _make_figure():
     return fig, ax
 
 
-def _download_band(s3_client, band_num):
-    """Download a Himawari-9 AHI band.
+def _download_band(s3_client, band_num, scan_time):
+    """Download all HSD segments for a Himawari-9 AHI band and load with satpy.
 
     Returns (data_array, x_metres, y_metres, sat_proj).
-    data_array contains raw float values with NaNs intact (no fill applied).
-    Returns (None, None, None, None) on any failure.
+    data_array contains calibrated float32 values (reflectance or BT) with NaN
+    for off-Earth pixels.  Returns (None, None, None, None) on any failure.
     """
-    print(f"  Downloading Band {band_num}...")
-    key = get_latest_himawari_file(s3_client, band_num)
-    if key is None:
-        print(f"  ERROR: No Band {band_num} data found in the last 6 hours.")
+    year, month, day, hhmm = scan_time
+    prefix   = f'AHI-L1b-FLDK/{year}/{month}/{day}/{hhmm}/'
+    band_tag = f'_B{band_num:02d}_'
+
+    print(f'  Downloading Band {band_num}...')
+    try:
+        resp = s3_client.list_objects_v2(Bucket=BUCKET, Prefix=prefix)
+        keys = sorted([
+            obj['Key'] for obj in resp.get('Contents', [])
+            if band_tag in obj['Key']
+        ])
+    except Exception as e:
+        print(f'  ERROR listing {prefix}: {e}')
         return None, None, None, None
 
-    local_file = f'/tmp/himawari_band{band_num}.nc'
+    if not keys:
+        print(f'  ERROR: No segments found for B{band_num:02d} in {prefix}')
+        return None, None, None, None
+
+    tmpdir = f'/tmp/ahi_B{band_num:02d}'
+    os.makedirs(tmpdir, exist_ok=True)
+    local_files = []
     try:
-        s3_client.download_file(BUCKET, key, local_file)
-        ds = xr.open_dataset(local_file, engine='netcdf4')
+        for key in keys:
+            fname = key.split('/')[-1]
+            local = os.path.join(tmpdir, fname)
+            s3_client.download_file(BUCKET, key, local)
+            local_files.append(local)
+        print(f'    {len(local_files)} segments')
 
-        cmi = ds['CMI'].values.astype(np.float32)
+        band_name = f'B{band_num:02d}'
+        scn = Scene(filenames=local_files, reader='ahi_hsd')
+        scn.load([band_name])
+        ds      = scn[band_name]
+        arr     = ds.values.astype(np.float32)
+        area    = ds.attrs['area']
+        left, bottom, right, top = area.area_extent
+        n_rows, n_cols = arr.shape
+        x = np.linspace(left, right, n_cols)
+        y = np.linspace(top, bottom, n_rows)  # decreasing: top → bottom
 
-        proj_var  = ds['goes_imager_projection']
-        sat_h     = float(proj_var.attrs['perspective_point_height'])
-        sat_lon   = float(proj_var.attrs['longitude_of_projection_origin'])
-        sat_sweep = str(proj_var.attrs['sweep_angle_axis'])
-        x = ds['x'].values * sat_h
-        y = ds['y'].values * sat_h
-        goes_proj = ccrs.Geostationary(
-            central_longitude=sat_lon,
-            satellite_height=sat_h,
-            sweep_axis=sat_sweep,
-        )
-        ds.close()
-        return cmi, x, y, goes_proj
+        sat_h    = float(area.proj_dict.get('h', 35785863))
+        sat_proj = ccrs.Geostationary(central_longitude=SAT_LON, satellite_height=sat_h)
+
+        v_min, v_max = float(np.nanmin(arr)), float(np.nanmax(arr))
+        print(f'  Band {band_num}: shape={arr.shape}, range=[{v_min:.2f}, {v_max:.2f}]')
+        return arr, x, y, sat_proj
 
     except Exception as e:
-        print(f"  ERROR loading Band {band_num}: {e}")
+        print(f'  ERROR loading Band {band_num}: {e}')
         import traceback
         traceback.print_exc()
         return None, None, None, None
 
     finally:
-        if os.path.exists(local_file):
-            os.remove(local_file)
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
 # Single-band renderer
 # ---------------------------------------------------------------------------
 
-def process_goes_band(s3_client, band, output_filename, colormap, vmin, vmax, gamma=1.0):
+def process_goes_band(s3_client, band, scan_time, output_filename, colormap, vmin, vmax, gamma=1.0):
     """Download and render a single Himawari-9 AHI band as a transparent PNG.
 
     gamma – optional power-law correction applied after normalising to [0, 1].
@@ -230,76 +244,39 @@ def process_goes_band(s3_client, band, output_filename, colormap, vmin, vmax, ga
     """
     print(f"\n--- Band {band}: {output_filename} ---")
 
-    key = get_latest_himawari_file(s3_client, band)
-    if key is None:
-        print(f"  ERROR: No Band {band} data found in the last 6 hours. Skipping.")
+    cmi_data, x, y, sat_proj = _download_band(s3_client, band, scan_time)
+    if cmi_data is None:
+        print(f"  Skipping {output_filename}.")
         return
 
-    local_file = f'/tmp/himawari_band{band}.nc'
-    try:
-        print(f"  Downloading...")
-        s3_client.download_file(BUCKET, key, local_file)
+    # Apply gamma correction if requested (normalise → gamma → restore range)
+    if gamma != 1.0:
+        normed   = np.clip((cmi_data - vmin) / (vmax - vmin), 0.0, 1.0)
+        cmi_data = np.power(normed, gamma) * (vmax - vmin) + vmin
 
-        ds       = xr.open_dataset(local_file, engine='netcdf4')
-        cmi_data = ds['CMI'].values  # Reflectance [0-1] for visible; BT [K] for IR/WV
+    fig, ax = _make_figure()
 
-        # Apply gamma correction if requested (normalise → gamma → restore range)
-        if gamma != 1.0:
-            normed   = np.clip((cmi_data - vmin) / (vmax - vmin), 0.0, 1.0)
-            cmi_data = np.power(normed, gamma) * (vmax - vmin) + vmin
+    # imshow is much faster than pcolormesh for regular-grid geostationary data
+    img_extent = (x[0], x[-1], y[-1], y[0])  # (left, right, bottom, top)
+    ax.imshow(
+        cmi_data, origin='upper', extent=img_extent,
+        transform=sat_proj, aspect='auto',
+        cmap=colormap, vmin=vmin, vmax=vmax, interpolation='none',
+    )
 
-        # --- Projection parameters from the file ---
-        proj_var  = ds['goes_imager_projection']
-        sat_h     = float(proj_var.attrs['perspective_point_height'])
-        sat_lon   = float(proj_var.attrs['longitude_of_projection_origin'])
-        sat_sweep = str(proj_var.attrs['sweep_angle_axis'])
-
-        # Convert scan angles (radians) → projection coordinates (meters)
-        x = ds['x'].values * sat_h
-        y = ds['y'].values * sat_h
-        X, Y = np.meshgrid(x, y)
-
-        goes_proj = ccrs.Geostationary(
-            central_longitude=sat_lon,
-            satellite_height=sat_h,
-            sweep_axis=sat_sweep
-        )
-
-        fig, ax = _make_figure()
-
-        ax.pcolormesh(
-            X, Y, cmi_data,
-            transform=goes_proj,
-            cmap=colormap,
-            vmin=vmin,
-            vmax=vmax,
-            shading='auto'
-        )
-
-        product_base = output_filename.replace('.png', '')
-        shift_frames(product_base)
-        output_path = os.path.join(OUTPUT_DIR, f'{product_base}_00.png')
-        plt.savefig(output_path, dpi=300, transparent=True)
-        plt.close()
-        print(f"  Saved: {output_path}")
-
-        ds.close()
-
-    except Exception as e:
-        print(f"  ERROR: {e}")
-        import traceback
-        traceback.print_exc()
-
-    finally:
-        if os.path.exists(local_file):
-            os.remove(local_file)
+    product_base = output_filename.replace('.png', '')
+    shift_frames(product_base)
+    output_path = os.path.join(OUTPUT_DIR, f'{product_base}_00.png')
+    plt.savefig(output_path, dpi=300, transparent=True)
+    plt.close()
+    print(f"  Saved: {output_path}")
 
 
 # ---------------------------------------------------------------------------
 # GeoColor composite (day / night)
 # ---------------------------------------------------------------------------
 
-def process_geocolor(s3_client):
+def process_geocolor(s3_client, scan_time):
     """GeoColor RGB composite.
 
     Daytime  – pseudo-natural colour from Bands 1 and 3 with gamma correction.
@@ -309,12 +286,12 @@ def process_geocolor(s3_client):
     print(f"\n--- GeoColor RGB Composite ---")
 
     # Fetch the two visible bands needed for the RGB composite
-    b1, x1, y1, goes_proj = _download_band(s3_client, 1)
+    b1, x1, y1, goes_proj = _download_band(s3_client, 1, scan_time)
     if b1 is None:
         print("  ERROR: Missing Band 1. Skipping GeoColor.")
         return
 
-    b2, x2, y2, _ = _download_band(s3_client, 3)
+    b2, x2, y2, _ = _download_band(s3_client, 3, scan_time)
     if b2 is None:
         print("  ERROR: Missing Band 3. Skipping GeoColor.")
         return
@@ -335,10 +312,10 @@ def process_geocolor(s3_client):
 
     if is_daytime:
         # Fetch Band 13 for cloud-top enhancement (failure is non-fatal)
-        bt13, *_ = _download_band(s3_client, 13)
+        bt13, *_ = _download_band(s3_client, 13, scan_time)
         _render_geocolor_day(b1, b2, x1, y1, goes_proj, bt13)
     else:
-        _render_geocolor_night(s3_client)
+        _render_geocolor_night(s3_client, scan_time)
 
 
 def _render_geocolor_day(b1, b2, x, y, goes_proj, bt13=None):
@@ -393,10 +370,10 @@ def _render_geocolor_day(b1, b2, x, y, goes_proj, bt13=None):
     print(f"  Saved (daytime): {output_path}")
 
 
-def _render_geocolor_night(s3_client):
+def _render_geocolor_night(s3_client, scan_time):
     """Nighttime GeoColor composite.
 
-    Cloud layer  – derived from Band 13 (10.35 µm clean IR window).
+    Cloud layer  – derived from Band 13 (10.4 µm clean IR window).
                    Cold temperatures → bright blue-white clouds.
     City lights  – derived from Band 7 (3.9 µm shortwave IR) minus the
                    thermal background estimated from Band 13.  At night,
@@ -405,7 +382,7 @@ def _render_geocolor_night(s3_client):
     Background   – fully transparent so the dark basemap shows through.
     """
     # Band 13: brightness temperature (K), same 2 km resolution as Band 7
-    bt13, x13, y13, goes_proj = _download_band(s3_client, 13)
+    bt13, x13, y13, goes_proj = _download_band(s3_client, 13, scan_time)
     if bt13 is None:
         print("  ERROR: Missing Band 13 for nighttime GeoColor. Skipping.")
         return
@@ -414,7 +391,7 @@ def _render_geocolor_night(s3_client):
     bt13 = np.where(np.isnan(bt13), 320.0, bt13)
 
     # Band 7: 3.9 µm shortwave IR — optional; gracefully absent
-    bt7, x7, y7, _ = _download_band(s3_client, 7)
+    bt7, x7, y7, _ = _download_band(s3_client, 7, scan_time)
 
     h, w = bt13.shape
 
@@ -496,21 +473,28 @@ def main():
         config=Config(signature_version=UNSIGNED)
     )
 
+    # Find the most recent 10-minute scan with data
+    print("\nFinding latest scan...")
+    scan_time = get_latest_scan_time(s3)
+    if scan_time is None:
+        print("ERROR: No Himawari-9 data found in the last 6 hours. Aborting.")
+        return
+
     # Band 3  — Red Visible (0.64 µm)          reflectance [0.0 – 1.0]
     # 'gray' maps 0→black (clear sky) and 1→white (bright cloud).
     # gamma=0.5 (square-root stretch) matches conventional satellite display.
-    process_goes_band(s3, 3,  'visible.png',  'gray',        vmin=0.0, vmax=1.0, gamma=0.5)
+    process_goes_band(s3, 3,  scan_time, 'visible.png',     'gray',          vmin=0.0, vmax=1.0, gamma=0.5)
 
     # Band 13 — Clean IR Longwave (10.4 µm)    brightness temp [K]
     # Custom NWS-style rainbow: cold tops → red/orange, warm surface → dark blue/black
-    process_goes_band(s3, 13, 'infrared.png', _ir_colormap(), vmin=190, vmax=310)
+    process_goes_band(s3, 13, scan_time, 'infrared.png',    _ir_colormap(),  vmin=190, vmax=310)
 
     # Band 9  — Mid-Level Water Vapor (6.9 µm)  brightness temp [K]
     # Custom enhancement: cold/moist → navy/blue, warm/dry → orange/red
-    process_goes_band(s3, 9,  'water_vapor.png', _wv_colormap(), vmin=195, vmax=280)
+    process_goes_band(s3, 9,  scan_time, 'water_vapor.png', _wv_colormap(),  vmin=195, vmax=280)
 
     # GeoColor — natural colour (day) or IR+city-lights composite (night)
-    process_geocolor(s3)
+    process_geocolor(s3, scan_time)
 
     # Write a plain-text timestamp so the website can show freshness
     ts_path = os.path.join(OUTPUT_DIR, 'last_updated.txt')
