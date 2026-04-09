@@ -159,19 +159,37 @@ def get_latest_scan_time(s3_client):
 
 
 def _make_figure():
-    """Create a matplotlib figure sized to match the geographic extent."""
-    lon_range = EXTENT[1] - EXTENT[0]
-    lat_range = EXTENT[3] - EXTENT[2]
-    mid_lat   = (EXTENT[2] + EXTENT[3]) / 2.0
-    fig_width = 12.0
-    fig_height = fig_width * lat_range / (lon_range * np.cos(np.radians(mid_lat)))
+    """Create a matplotlib figure in Web Mercator projection.
+
+    Rendering in Mercator (rather than PlateCarree) ensures the PNG pixels
+    map linearly onto Leaflet's tile coordinate system, so the L.imageOverlay
+    is not squished and geographic coordinates align correctly.
+    """
+    # Compute Mercator Y extent to derive the correct figure aspect ratio.
+    # Formula: y = R * ln(tan(π/4 + φ/2))  (standard Web Mercator / EPSG:3857)
+    R = 6_378_137.0  # WGS-84 semi-major axis (metres)
+    lat_min_rad = np.radians(EXTENT[2])
+    lat_max_rad = np.radians(EXTENT[3])
+    merc_y_max = R * np.log(np.tan(np.pi / 4.0 + lat_max_rad / 2.0))
+    merc_y_min = R * np.log(np.tan(np.pi / 4.0 + lat_min_rad / 2.0))
+    merc_y_range = merc_y_max - merc_y_min          # ~16.8 M m for 60 °S–60 °N
+    merc_x_range = np.radians(EXTENT[1] - EXTENT[0]) * R  # ~13.4 M m for 120 ° lon
+
+    fig_width  = 12.0
+    fig_height = fig_width * merc_y_range / merc_x_range  # ≈ 15.1 in for this domain
 
     fig = plt.figure(figsize=(fig_width, fig_height))
-    # PlateCarree centred on SAT_LON handles the antimeridian crossing naturally
-    crs = ccrs.PlateCarree(central_longitude=SAT_LON)
+    # Mercator centred on SAT_LON keeps the antimeridian crossing away from the
+    # map edge and matches the Web Mercator tiles used by Leaflet.
+    crs = ccrs.Mercator(central_longitude=SAT_LON)
     ax  = fig.add_axes([0, 0, 1, 1], projection=crs)
-    # Convert geographic EXTENT to the rotated CRS coordinate space
-    ax.set_extent([EXTENT[0] - SAT_LON, EXTENT[1] - SAT_LON, EXTENT[2], EXTENT[3]], crs=crs)
+    # Use a PlateCarree shifted to SAT_LON so the 200 °E coordinate stays
+    # within [−180, 180] and Cartopy handles it unambiguously.
+    geog_crs = ccrs.PlateCarree(central_longitude=SAT_LON)
+    ax.set_extent(
+        [EXTENT[0] - SAT_LON, EXTENT[1] - SAT_LON, EXTENT[2], EXTENT[3]],
+        crs=geog_crs,
+    )
     ax.set_aspect('auto')  # prevent Cartopy equal-aspect padding; image must fill extent exactly
     ax.set_axis_off()
     fig.patch.set_alpha(0.0)

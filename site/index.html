@@ -28,17 +28,42 @@
             font-size: 12px;
         }
 
-        #frame-indicator {
+        #animation-controls {
             position: absolute;
-            bottom: 30px;
-            left: 10px;
+            bottom: 10px;
+            left: 50%;
+            transform: translateX(-50%);
             z-index: 1000;
-            background: rgba(0,0,0,0.6);
-            color: #7cf;
-            padding: 4px 10px;
-            border-radius: 4px;
+            background: rgba(0, 0, 0, 0.72);
+            color: #fff;
+            padding: 6px 14px;
+            border-radius: 6px;
             font-family: monospace;
             font-size: 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            white-space: nowrap;
+        }
+        #play-pause-btn {
+            background: none;
+            border: 1px solid #7cf;
+            color: #7cf;
+            border-radius: 4px;
+            padding: 2px 8px;
+            cursor: pointer;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+        #play-pause-btn:hover { background: rgba(119, 204, 255, 0.15); }
+        #frame-slider {
+            width: 180px;
+            cursor: pointer;
+            accent-color: #7cf;
+        }
+        #frame-select-label {
+            min-width: 44px;
+            text-align: right;
         }
 
         /* ---- Legend panel ---- */
@@ -104,7 +129,13 @@
 <body>
     <div id="map"></div>
     <div id="timestamp">Loading...</div>
-    <div id="frame-indicator">▶ LIVE</div>
+    <div id="animation-controls">
+        <button id="play-pause-btn" title="Play / Pause animation">⏸</button>
+        <span style="font-size:11px;color:#888;">Older</span>
+        <input type="range" id="frame-slider" min="0" max="9" value="0">
+        <span style="font-size:11px;color:#888;">LIVE</span>
+        <span id="frame-select-label" style="color:#7cf;">LIVE</span>
+    </div>
     <div id="legend"></div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -240,9 +271,12 @@
         // Frame animation — cycles through the 10-frame rolling buffer
         // Frame 00 = newest (LIVE), Frame 09 = oldest (~9 h ago)
         // Plays oldest→newest then loops: 9, 8, 7, …, 1, 0, 9, 8, …
+        // Slider: left = oldest (value 0 → frame 9), right = LIVE (value 9 → frame 0)
         // ----------------------------------------------------------------
         var NUM_FRAMES    = 10;
         var currentFrame  = NUM_FRAMES - 1;   // start at oldest
+        var isPlaying     = true;
+        var animInterval  = null;
 
         var layerProducts = [
             { layer: geocolorLayer,   product: 'geocolor'    },
@@ -262,21 +296,50 @@
                     lp.layer.setUrl(frameUrl(lp.product, currentFrame));
                 }
             });
-            var ind = document.getElementById('frame-indicator');
+            // Sync slider position: slider value 0 = oldest, MAX-1 = LIVE
+            document.getElementById('frame-slider').value = NUM_FRAMES - 1 - currentFrame;
+            var lbl = document.getElementById('frame-select-label');
             if (currentFrame === 0) {
-                ind.textContent = '▶ LIVE';
-                ind.style.color = '#7cf';
+                lbl.textContent = 'LIVE';
+                lbl.style.color = '#7cf';
             } else {
-                ind.textContent = '▶ -' + currentFrame + 'h';
-                ind.style.color = '#fa8';
+                lbl.textContent = '-' + currentFrame + 'h';
+                lbl.style.color = '#fa8';
             }
         }
 
-        setInterval(function() {
-            // Advance one step older→newer; wrap newest back to oldest
-            currentFrame = (currentFrame - 1 + NUM_FRAMES) % NUM_FRAMES;
+        function startAnimation() {
+            if (animInterval !== null) return;
+            animInterval = setInterval(function() {
+                // Advance one step older→newer; wrap newest back to oldest
+                currentFrame = (currentFrame - 1 + NUM_FRAMES) % NUM_FRAMES;
+                updateAnimationFrame();
+            }, 1000);
+            isPlaying = true;
+            document.getElementById('play-pause-btn').textContent = '⏸';
+        }
+
+        function stopAnimation() {
+            if (animInterval !== null) {
+                clearInterval(animInterval);
+                animInterval = null;
+            }
+            isPlaying = false;
+            document.getElementById('play-pause-btn').textContent = '▶';
+        }
+
+        document.getElementById('play-pause-btn').addEventListener('click', function() {
+            if (isPlaying) { stopAnimation(); } else { startAnimation(); }
+        });
+
+        // Scrubbing the slider pauses the animation and jumps to the selected frame
+        document.getElementById('frame-slider').addEventListener('input', function() {
+            stopAnimation();
+            currentFrame = NUM_FRAMES - 1 - parseInt(this.value, 10);
             updateAnimationFrame();
-        }, 1000);
+        });
+
+        startAnimation();   // begin playing on load
 
         map.on('layeradd layerremove', function(e) {
             updateLegend();
