@@ -190,7 +190,6 @@ def _make_figure():
         [EXTENT[0] - SAT_LON, EXTENT[1] - SAT_LON, EXTENT[2], EXTENT[3]],
         crs=geog_crs,
     )
-    ax.set_aspect('auto')  # prevent Cartopy equal-aspect padding; image must fill extent exactly
     ax.set_axis_off()
     fig.patch.set_alpha(0.0)
     ax.patch.set_alpha(0.0)
@@ -312,7 +311,7 @@ def process_goes_band(s3_client, band, scan_time, output_filename, colormap, vmi
     img_extent = (x[0], x[-1], y[-1], y[0])  # (left, right, bottom, top)
     ax.imshow(
         cmi_data, origin='upper', extent=img_extent,
-        transform=sat_proj, aspect='auto',
+        transform=sat_proj,
         cmap=colormap, vmin=vmin, vmax=vmax, interpolation='none',
     )
 
@@ -386,34 +385,37 @@ def _render_geocolor_day(b1, b2, x, y, goes_proj, bt13=None):
     G = np.clip(0.5 * b2 + 0.5 * b1, 0, 1)
     B = np.clip(b1, 0, 1)
 
-    # Gamma correction for natural brightness
-    gamma = 0.5
+    # Gamma correction for natural brightness.
+    # 0.7 gives a moderate stretch: dark ocean/land is still visible while
+    # bright clouds don't blow out to pure white the way 0.5 (sqrt) does.
+    gamma = 0.7
     R = np.power(R, gamma)
     G = np.power(G, gamma)
     B = np.power(B, gamma)
 
     # --- Cloud enhancement via Band 13 IR ---
-    # Pixels colder than ~255 K (high cloud tops) are blended towards bright
-    # white, making anvils and deep convection clearly pop out.
+    # Only very cold tops (< 235 K — deep convection, thick cirrus anvils) are
+    # blended toward bright white.  Warm low/mid clouds are left as-is so the
+    # rest of the image doesn't get washed out.
     if bt13 is not None:
         bt13_f = np.where(np.isnan(bt13), 320.0, bt13)
-        # Band 13 is 2 km; Band 1/2/3 composite is at 1 km – upsample to match
+        # Band 13 is 2 km; Band 1/3 composite is at 1 km – upsample to match
         if bt13_f.shape != R.shape:
             zy = R.shape[0] / bt13_f.shape[0]
             zx = R.shape[1] / bt13_f.shape[1]
             bt13_f = zoom(bt13_f, (zy, zx), order=1)
-        # 255 K → 0 (no enhancement); 200 K → 1 (pure-white cloud tops)
-        cloud_enhance = np.clip((255.0 - bt13_f) / 55.0, 0.0, 1.0)
-        strength = 0.85
+        # 235 K → 0 (no enhancement); 190 K → 1 (pure-white deep convection)
+        cloud_enhance = np.clip((235.0 - bt13_f) / 45.0, 0.0, 1.0)
+        strength = 0.50
         R = np.clip(R + cloud_enhance * (1.0 - R) * strength, 0.0, 1.0)
         G = np.clip(G + cloud_enhance * (1.0 - G) * strength, 0.0, 1.0)
-        B = np.clip(B + cloud_enhance * (1.0 - B) * (strength + 0.05), 0.0, 1.0)
+        B = np.clip(B + cloud_enhance * (1.0 - B) * strength, 0.0, 1.0)
 
     rgb = np.dstack([R, G, B])
     fig, ax = _make_figure()
     img_extent = (x[0], x[-1], y[-1], y[0])
     ax.imshow(rgb, origin='upper', extent=img_extent,
-              transform=goes_proj, aspect='auto', interpolation='none')
+              transform=goes_proj, interpolation='none')
 
     shift_frames('geocolor')
     output_path = os.path.join(OUTPUT_DIR, 'geocolor_00.png')
@@ -499,7 +501,7 @@ def _render_geocolor_night(s3_client, scan_time):
     fig, ax = _make_figure()
     img_extent = (x13[0], x13[-1], y13[-1], y13[0])
     ax.imshow(rgba, origin='upper', extent=img_extent,
-              transform=goes_proj, aspect='auto', interpolation='none')
+              transform=goes_proj, interpolation='none')
 
     shift_frames('geocolor')
     output_path = os.path.join(OUTPUT_DIR, 'geocolor_00.png')
@@ -535,7 +537,7 @@ def main():
     # Band 3  — Red Visible (0.64 µm)          reflectance [0.0 – 1.0]
     # 'gray' maps 0→black (clear sky) and 1→white (bright cloud).
     # gamma=0.5 (square-root stretch) matches conventional satellite display.
-    process_goes_band(s3, 3,  scan_time, 'visible.png',     'gray',          vmin=0.0, vmax=1.0, gamma=0.5)
+    process_goes_band(s3, 3,  scan_time, 'visible.png',     'gray',          vmin=0.0, vmax=1.0, gamma=0.7)
 
     # Band 13 — Clean IR Longwave (10.4 µm)    brightness temp [K]
     # Custom NWS-style rainbow: cold tops → red/orange, warm surface → dark blue/black
