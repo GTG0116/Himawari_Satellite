@@ -249,6 +249,13 @@ def _download_band(s3_client, band_num, scan_time):
         ds      = scn[band_name]
         arr     = ds.values.astype(np.float32)
         area    = ds.attrs['area']
+
+        # Satpy calibrates AHI visible bands to reflectance in percent (0–100 %).
+        # Normalise to fraction (0–1) so that downstream np.clip(x, 0, 1) and
+        # vmin/vmax=0/1 work correctly.  IR bands (BT in Kelvin) are untouched.
+        if ds.attrs.get('calibration') == 'reflectance':
+            arr = arr / 100.0
+
         left, bottom, right, top = area.area_extent
         n_rows, n_cols = arr.shape
 
