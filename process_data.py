@@ -256,6 +256,22 @@ def _download_band(s3_client, band_num, scan_time):
         scn.load([band_name])
         ds      = scn[band_name]
         arr     = ds.values.astype(np.float32)
+
+        # Satpy calibrates AHI visible/near-IR channels (B01–B06) to
+        # reflectance, but may return percent (0–100) rather than fraction
+        # (0–1) depending on the satpy version.  All downstream code
+        # (vmin/vmax, SZA correction, gamma) assumes the fraction form.
+        # Detect via the dataset's units attribute and normalise if needed.
+        if band_num <= 6:
+            units = ds.attrs.get('units', '')
+            if units == '%':
+                arr /= 100.0
+                print(f'  Band {band_num}: converted from percent reflectance to fraction [0, 1]')
+            elif np.nanmax(arr) > 2.0:
+                # Fallback: units tag missing but values clearly in percent range
+                arr /= 100.0
+                print(f'  Band {band_num}: normalised to fraction [0, 1] (units tag was "{units}")')
+
         area    = ds.attrs['area']
         left, bottom, right, top = area.area_extent
         n_rows, n_cols = arr.shape
