@@ -27,7 +27,7 @@ SAT_LON = 140.7  # Himawari-9 sub-satellite longitude (°E)
 EXTENT = [80, 200, -60, 60]
 
 # Maximum pixels per dimension after loading a band.
-# Our output figure is 12 in × 300 DPI = 3 600 px wide, so 2 750 px input
+# Our output figure is 12 in × 150 DPI = 1 800 px wide, so 2 750 px input
 # is already more than enough and keeps each band under ~30 MB of RAM.
 # Band 3 (0.5 km, 11 000×11 000) is downsampled 4× to ~2 750×2 750;
 # 2 km bands (5 500×5 500) are halved to ~2 750×2 750.
@@ -421,7 +421,7 @@ def process_goes_band(s3_client, band, scan_time, output_filename, colormap,
     product_base = output_filename.replace('.png', '')
     shift_frames(product_base)
     output_path = os.path.join(OUTPUT_DIR, f'{product_base}_00.png')
-    plt.savefig(output_path, dpi=300, transparent=True)
+    plt.savefig(output_path, dpi=150, transparent=True)
     plt.close()
     print(f"  Saved: {output_path}")
 
@@ -536,7 +536,7 @@ def _render_geocolor_day(b1, b2, x, y, goes_proj, bt13=None, scan_time=None):
 
     shift_frames('geocolor')
     output_path = os.path.join(OUTPUT_DIR, 'geocolor_00.png')
-    plt.savefig(output_path, dpi=300, transparent=True)
+    plt.savefig(output_path, dpi=150, transparent=True)
     plt.close()
     print(f"  Saved (daytime): {output_path}")
 
@@ -622,7 +622,7 @@ def _render_geocolor_night(s3_client, scan_time):
 
     shift_frames('geocolor')
     output_path = os.path.join(OUTPUT_DIR, 'geocolor_00.png')
-    plt.savefig(output_path, dpi=300, transparent=True)
+    plt.savefig(output_path, dpi=150, transparent=True)
     plt.close()
     print(f"  Saved (nighttime): {output_path}")
 
