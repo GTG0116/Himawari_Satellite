@@ -135,6 +135,12 @@ def shift_frames(product_base):
 def get_latest_scan_time(s3_client):
     """Find the most recent available Himawari-9 scan (every 10 minutes).
 
+    Checks for the presence of Band 3 (visible) files specifically, not just
+    any file in the prefix.  This avoids a race condition where Band 01 has
+    been uploaded to S3 but Band 03 (and others) have not yet arrived — the
+    uploader streams bands in numerical order, so a partial scan prefix is
+    common for the most-recent time slot.
+
     Returns (year, month, day, hhmm) as strings, or None if no data found
     within the past 6 hours.
     """
@@ -147,14 +153,17 @@ def get_latest_scan_time(s3_client):
         month = t.strftime('%m')
         day   = t.strftime('%d')
         hhmm  = t.strftime('%H%M')
-        prefix = f'AHI-L1b-FLDK/{year}/{month}/{day}/{hhmm}/'
+        # Use a Band-03-specific prefix so we only accept scans where the
+        # visible band is fully available (a reliable proxy for a complete scan).
+        b03_prefix = (f'AHI-L1b-FLDK/{year}/{month}/{day}/{hhmm}/'
+                      f'HS_H09_{year}{month}{day}_{hhmm}_B03_')
         try:
-            resp = s3_client.list_objects_v2(Bucket=BUCKET, Prefix=prefix, MaxKeys=1)
+            resp = s3_client.list_objects_v2(Bucket=BUCKET, Prefix=b03_prefix, MaxKeys=1)
             if resp.get('Contents'):
                 print(f'  Latest scan: {year}/{month}/{day} {hhmm} UTC')
                 return year, month, day, hhmm
         except Exception as e:
-            print(f'  Warning scanning {prefix}: {e}')
+            print(f'  Warning scanning {b03_prefix}: {e}')
     return None
 
 
