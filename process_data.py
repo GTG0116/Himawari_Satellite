@@ -51,6 +51,14 @@ SECTOR_PAD_DEG = 8.0
 SECTOR_FIG_WIDTH = 8.0   # inches
 SECTOR_DPI       = 200   # → 1 600 px wide for ~16° lon ≈ 100 px/° vs 15 px/° full disk
 
+# For sector downloads we do NOT downsample high-resolution bands.
+# Band 3 (0.5 km, native 11 000 px) covers 16° in ~1 467 px — close to 1:1
+# with our 1 600 px sector output, giving true native-resolution imagery.
+# Band 1 (1 km, native 5 500 px) similarly stays unscaled.
+# 2 km bands (9, 13) are natively only 2 750 px; no improvement possible,
+# so they use MAX_BAND_PX (already at native).
+SECTOR_BAND_MAX_PX_HI = None   # None = no downsampling (native resolution)
+
 # Module-level cache so each band is downloaded and loaded only once per run,
 # even if it is needed by multiple products (e.g. Band 13 for both the IR
 # product and the GeoColor cloud-top enhancement).
@@ -294,7 +302,7 @@ def _render_sector_band(arr, x, y, sat_proj, extent, product_base, colormap,
     img_extent = (x[0], x[-1], y[-1], y[0])
     ax.imshow(arr, origin='upper', extent=img_extent,
               transform=sat_proj, cmap=colormap,
-              vmin=vmin, vmax=vmax, interpolation='bilinear')
+              vmin=vmin, vmax=vmax, interpolation='none')
     shift_frames(product_base)
     out = os.path.join(OUTPUT_DIR, f'{product_base}_00.png')
     plt.savefig(out, dpi=SECTOR_DPI, transparent=True)
@@ -316,9 +324,12 @@ def process_cyclone_sectors(s3_client, scan_time, storms):
         _write_sectors_meta([])
         return
 
-    # Bands needed: 1 (blue), 3 (red/vis), 9 (WV), 13 (IR)
-    b1,  x1,  y1,  goes_proj = _download_band(s3_client, 1,  scan_time)
-    b3,  x3,  y3,  _         = _download_band(s3_client, 3,  scan_time)
+    # Download visible bands at native resolution for true high-res sectors.
+    # Band 3 (0.5 km, native ~11 000 px): sector covers ~1 467 px → 1 600 px output (≈1:1)
+    # Band 1 (1 km,   native ~5 500 px):  sector covers   ~730 px → 1 600 px output (2.2×)
+    # Bands 9, 13 (2 km, native ~2 750 px): already at MAX_BAND_PX, nothing to gain.
+    b1,  x1,  y1,  goes_proj = _download_band(s3_client, 1,  scan_time, max_px=SECTOR_BAND_MAX_PX_HI)
+    b3,  x3,  y3,  _         = _download_band(s3_client, 3,  scan_time, max_px=SECTOR_BAND_MAX_PX_HI)
     b9,  x9,  y9,  _         = _download_band(s3_client, 9,  scan_time)
     b13, x13, y13, _         = _download_band(s3_client, 13, scan_time)
 
@@ -367,7 +378,7 @@ def process_cyclone_sectors(s3_client, scan_time, storms):
                 fig, ax = _make_figure_sector(bounds)
                 img_ext = (x1[0], x1[-1], y1[-1], y1[0])
                 ax.imshow(rgb, origin='upper', extent=img_ext,
-                          transform=goes_proj, interpolation='bilinear')
+                          transform=goes_proj, interpolation='none')
             else:  # nighttime — use IR cloud + city-lights logic
                 if b13 is not None:
                     bt13_n = np.where(np.isnan(b13), 320.0, b13)
@@ -378,7 +389,7 @@ def process_cyclone_sectors(s3_client, scan_time, storms):
                     fig, ax = _make_figure_sector(bounds)
                     img_ext = (x13[0], x13[-1], y13[-1], y13[0])
                     ax.imshow(rgba, origin='upper', extent=img_ext,
-                              transform=goes_proj, interpolation='bilinear')
+                              transform=goes_proj, interpolation='none')
                 else:
                     fig, ax = _make_figure_sector(bounds)
 
@@ -436,20 +447,21 @@ def _write_sectors_meta(sectors_meta):
     print(f"  Sectors metadata written: {path}  ({len(sectors_meta)} sector(s))")
 
 
-def _download_band(s3_client, band_num, scan_time):
+def _download_band(s3_client, band_num, scan_time, max_px=MAX_BAND_PX):
     """Download all HSD segments for a Himawari-9 AHI band and load with satpy.
 
-    Results are cached for the lifetime of the process so that bands shared
-    between products (Band 3 for visible + GeoColor, Band 13 for IR + GeoColor)
-    are only downloaded and decoded once.
+    max_px controls the maximum pixels-per-dimension after loading.  Pass
+    None to skip downsampling entirely (native resolution).  Calls with
+    different max_px values are cached separately so high-res sector
+    downloads don't evict the lower-res full-disk versions.
 
     Returns (data_array, x_metres, y_metres, sat_proj).
     data_array contains calibrated float32 values (reflectance or BT) with NaN
     for off-Earth pixels.  Returns (None, None, None, None) on any failure.
     """
-    cache_key = (band_num, scan_time)
+    cache_key = (band_num, scan_time, max_px)
     if cache_key in _band_cache:
-        print(f'  Band {band_num}: using cached data')
+        print(f'  Band {band_num}: using cached data (max_px={max_px})')
         return _band_cache[cache_key]
 
     year, month, day, hhmm = scan_time
@@ -507,12 +519,10 @@ def _download_band(s3_client, band_num, scan_time):
         left, bottom, right, top = area.area_extent
         n_rows, n_cols = arr.shape
 
-        # Downsample high-resolution bands to stay within MAX_BAND_PX.
-        # Band 3 (0.5 km) is 11 000×11 000 ≈ 484 MB; downsampled 4× → ~30 MB.
-        # 2 km bands (5 500×5 500) are halved → ~30 MB.
-        # Our output figure is 3 600 px wide, so 2 750 px input is plenty.
-        if max(n_rows, n_cols) > MAX_BAND_PX:
-            scale = MAX_BAND_PX / max(n_rows, n_cols)
+        # Downsample high-resolution bands to stay within max_px.
+        # max_px=None means no downsampling (native resolution for sectors).
+        if max_px is not None and max(n_rows, n_cols) > max_px:
+            scale = max_px / max(n_rows, n_cols)
             arr   = zoom(arr, scale, order=1)
             n_rows, n_cols = arr.shape
 
