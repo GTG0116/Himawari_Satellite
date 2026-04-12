@@ -1,5 +1,7 @@
 import boto3
 import shutil
+import json
+import urllib.request
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -32,6 +34,22 @@ EXTENT = [80, 200, -60, 60]
 # Band 3 (0.5 km, 11 000×11 000) is downsampled 4× to ~2 750×2 750;
 # 2 km bands (5 500×5 500) are halved to ~2 750×2 750.
 MAX_BAND_PX = 2750
+
+# ---------------------------------------------------------------------------
+# Cyclone sector settings
+# ---------------------------------------------------------------------------
+# URL for JTWC active storm data
+STORMS_JSON_URL = ('https://raw.githubusercontent.com/GTG0116/JTWCTyphoonData/'
+                   'claude/jtwc-forecast-viewer-NQqQA/data/storms.json')
+
+# Padding (degrees) added around a storm's position to define the sector.
+# 8° gives a ~16°×16° box, comfortably containing most wind-radii extents.
+SECTOR_PAD_DEG = 8.0
+
+# Sector rendering uses a smaller figure at higher DPI to maximise pixel
+# density over the small geographic area.
+SECTOR_FIG_WIDTH = 8.0   # inches
+SECTOR_DPI       = 200   # → 1 600 px wide for ~16° lon ≈ 100 px/° vs 15 px/° full disk
 
 # Module-level cache so each band is downloaded and loaded only once per run,
 # even if it is needed by multiple products (e.g. Band 13 for both the IR
@@ -203,6 +221,219 @@ def _make_figure():
     fig.patch.set_alpha(0.0)
     ax.patch.set_alpha(0.0)
     return fig, ax
+
+
+def _make_figure_sector(extent):
+    """Create a matplotlib figure in Web Mercator for a cyclone sector.
+
+    Same approach as _make_figure() but uses the supplied extent and a
+    higher DPI / different figure size tuned for sector crops.
+    """
+    R = 6_378_137.0
+    lat_min_rad = np.radians(extent[2])
+    lat_max_rad = np.radians(extent[3])
+    merc_y_max = R * np.log(np.tan(np.pi / 4.0 + lat_max_rad / 2.0))
+    merc_y_min = R * np.log(np.tan(np.pi / 4.0 + lat_min_rad / 2.0))
+    merc_y_range = merc_y_max - merc_y_min
+    merc_x_range = np.radians(extent[1] - extent[0]) * R
+
+    fig_height = SECTOR_FIG_WIDTH * merc_y_range / merc_x_range
+
+    fig = plt.figure(figsize=(SECTOR_FIG_WIDTH, fig_height))
+    crs = ccrs.Mercator(central_longitude=SAT_LON)
+    ax  = fig.add_axes([0, 0, 1, 1], projection=crs)
+    geog_crs = ccrs.PlateCarree(central_longitude=SAT_LON)
+    ax.set_extent(
+        [extent[0] - SAT_LON, extent[1] - SAT_LON, extent[2], extent[3]],
+        crs=geog_crs,
+    )
+    ax.set_axis_off()
+    fig.patch.set_alpha(0.0)
+    ax.patch.set_alpha(0.0)
+    return fig, ax
+
+
+def fetch_active_storms():
+    """Fetch active storm list from JTWC data URL.
+
+    Returns a list of storm dicts (may be empty on any error).
+    Each dict has at minimum: id, name, basin, current.lat/lon/wind_kt/
+    classification/classification_label.
+    """
+    try:
+        req = urllib.request.Request(STORMS_JSON_URL,
+                                     headers={'User-Agent': 'HimawariSatViewer/1.0'})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode())
+        storms = data.get('storms', [])
+        print(f"  Fetched {len(storms)} active storm(s) from JTWC data.")
+        return storms
+    except Exception as e:
+        print(f"  WARNING: Could not fetch storm data: {e}")
+        return []
+
+
+def _sector_bounds(lat, lon):
+    """Return [west, east, south, north] for a cyclone sector centred on lat/lon."""
+    west  = max(lon - SECTOR_PAD_DEG, EXTENT[0])
+    east  = min(lon + SECTOR_PAD_DEG, EXTENT[1])
+    south = max(lat - SECTOR_PAD_DEG, EXTENT[2])
+    north = min(lat + SECTOR_PAD_DEG, EXTENT[3])
+    return [west, east, south, north]
+
+
+def _render_sector_band(arr, x, y, sat_proj, extent, product_base, colormap,
+                        vmin, vmax, gamma=1.0):
+    """Render a band array cropped to *extent* and save as a high-res sector PNG."""
+    # Apply gamma before rendering
+    if gamma != 1.0:
+        normed = np.clip((arr - vmin) / (vmax - vmin), 0.0, 1.0)
+        arr    = np.power(normed, gamma) * (vmax - vmin) + vmin
+
+    fig, ax = _make_figure_sector(extent)
+    img_extent = (x[0], x[-1], y[-1], y[0])
+    ax.imshow(arr, origin='upper', extent=img_extent,
+              transform=sat_proj, cmap=colormap,
+              vmin=vmin, vmax=vmax, interpolation='bilinear')
+    shift_frames(product_base)
+    out = os.path.join(OUTPUT_DIR, f'{product_base}_00.png')
+    plt.savefig(out, dpi=SECTOR_DPI, transparent=True)
+    plt.close()
+    print(f"    Saved sector: {out}")
+
+
+def process_cyclone_sectors(s3_client, scan_time, storms):
+    """Generate high-resolution sector images for each active cyclone.
+
+    For every storm, four sector PNGs are produced (geocolor, visible,
+    infrared, water_vapor) using the full-native-resolution band data
+    cropped to a ~16°×16° box centred on the storm.  A sectors_meta.json
+    file is written to OUTPUT_DIR listing each sector's metadata and
+    geographic bounds so the frontend can display the correct overlays.
+    """
+    if not storms:
+        # Write an empty metadata file so the frontend can detect no sectors
+        _write_sectors_meta([])
+        return
+
+    # Bands needed: 1 (blue), 3 (red/vis), 9 (WV), 13 (IR)
+    b1,  x1,  y1,  goes_proj = _download_band(s3_client, 1,  scan_time)
+    b3,  x3,  y3,  _         = _download_band(s3_client, 3,  scan_time)
+    b9,  x9,  y9,  _         = _download_band(s3_client, 9,  scan_time)
+    b13, x13, y13, _         = _download_band(s3_client, 13, scan_time)
+
+    sectors_meta = []
+
+    for storm in storms:
+        sid   = storm.get('id', 'UNKNOWN')
+        name  = storm.get('name', 'Unknown')
+        cur   = storm.get('current', {})
+        clat  = cur.get('lat')
+        clon  = cur.get('lon')
+
+        if clat is None or clon is None:
+            print(f"  Skipping sector for {sid}: no position data.")
+            continue
+
+        bounds = _sector_bounds(clat, clon)
+        print(f"\n--- Cyclone Sector: {name} ({sid})  [{clat}°N, {clon}°E] ---")
+        print(f"    Sector bounds: W{bounds[0]} E{bounds[1]} S{bounds[2]} N{bounds[3]}")
+
+        safe_id = sid.replace('/', '_')
+
+        # ---- GeoColor sector ----
+        if b1 is not None and b3 is not None:
+            b1_f = np.nan_to_num(b1, nan=0.0)
+            b3_f = np.nan_to_num(b3, nan=0.0)
+            # Match Band 3 shape to Band 1
+            if b3_f.shape != b1_f.shape:
+                b3_f = zoom(b3_f, (b1_f.shape[0]/b3_f.shape[0],
+                                   b1_f.shape[1]/b3_f.shape[1]), order=1)
+            mean_ref = float(np.nanmean(b3_f))
+            if mean_ref > 0.05:  # daytime
+                R = np.power(np.clip(b3_f, 0, 1), 0.6)
+                G = np.power(np.clip(0.5*b3_f + 0.5*b1_f, 0, 1), 0.6)
+                B = np.power(np.clip(b1_f, 0, 1), 0.6)
+                if b13 is not None:
+                    bt13_f = np.where(np.isnan(b13), 320.0, b13)
+                    if bt13_f.shape != R.shape:
+                        bt13_f = zoom(bt13_f, (R.shape[0]/bt13_f.shape[0],
+                                               R.shape[1]/bt13_f.shape[1]), order=1)
+                    ce = np.clip((235.0 - bt13_f) / 45.0, 0.0, 1.0) * 0.5
+                    R = np.clip(R + ce*(1-R), 0, 1)
+                    G = np.clip(G + ce*(1-G), 0, 1)
+                    B = np.clip(B + ce*(1-B), 0, 1)
+                rgb = np.dstack([R, G, B])
+                fig, ax = _make_figure_sector(bounds)
+                img_ext = (x1[0], x1[-1], y1[-1], y1[0])
+                ax.imshow(rgb, origin='upper', extent=img_ext,
+                          transform=goes_proj, interpolation='bilinear')
+            else:  # nighttime — use IR cloud + city-lights logic
+                if b13 is not None:
+                    bt13_n = np.where(np.isnan(b13), 320.0, b13)
+                    co = np.clip((275.0 - bt13_n) / 55.0, 0.0, 1.0)
+                    R2 = co * 0.80; G2 = co * 0.88; B2 = co * 1.00
+                    A2 = np.clip(co * 1.5, 0.0, 1.0)
+                    rgba = np.dstack([R2, G2, B2, A2]).astype(np.float32)
+                    fig, ax = _make_figure_sector(bounds)
+                    img_ext = (x13[0], x13[-1], y13[-1], y13[0])
+                    ax.imshow(rgba, origin='upper', extent=img_ext,
+                              transform=goes_proj, interpolation='bilinear')
+                else:
+                    fig, ax = _make_figure_sector(bounds)
+
+            pb = f'geocolor_sector_{safe_id}'
+            shift_frames(pb)
+            plt.savefig(os.path.join(OUTPUT_DIR, f'{pb}_00.png'),
+                        dpi=SECTOR_DPI, transparent=True)
+            plt.close()
+            print(f"    Saved sector GeoColor.")
+
+        # ---- Visible sector ----
+        if b3 is not None:
+            b3_vis = np.nan_to_num(b3, nan=0.0)
+            _render_sector_band(b3_vis, x3, y3, goes_proj, bounds,
+                                f'visible_sector_{safe_id}', 'gray', 0.0, 1.0, gamma=0.6)
+
+        # ---- Infrared sector ----
+        if b13 is not None:
+            _render_sector_band(b13, x13, y13, goes_proj, bounds,
+                                f'infrared_sector_{safe_id}', _ir_colormap(), 190, 310)
+
+        # ---- Water vapor sector ----
+        if b9 is not None:
+            _render_sector_band(b9, x9, y9, goes_proj, bounds,
+                                f'water_vapor_sector_{safe_id}', _wv_colormap(), 195, 280)
+
+        sectors_meta.append({
+            'id':                   sid,
+            'safe_id':              safe_id,
+            'name':                 name,
+            'basin':                storm.get('basin', ''),
+            'basin_name':           storm.get('basin_name', ''),
+            'classification':       cur.get('classification', ''),
+            'classification_label': cur.get('classification_label', ''),
+            'wind_kt':              cur.get('wind_kt', 0),
+            'wind_mph':             cur.get('wind_mph', 0),
+            'pressure_mb':          cur.get('pressure_mb', 0),
+            'lat':                  clat,
+            'lon':                  clon,
+            'bounds':               bounds,   # [west, east, south, north]
+        })
+
+    _write_sectors_meta(sectors_meta)
+
+
+def _write_sectors_meta(sectors_meta):
+    """Write sectors_meta.json so the frontend knows which sectors exist."""
+    meta = {
+        'generated': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+        'sectors':   sectors_meta,
+    }
+    path = os.path.join(OUTPUT_DIR, 'sectors_meta.json')
+    with open(path, 'w') as f:
+        json.dump(meta, f, indent=2)
+    print(f"  Sectors metadata written: {path}  ({len(sectors_meta)} sector(s))")
 
 
 def _download_band(s3_client, band_num, scan_time):
@@ -667,6 +898,11 @@ def main():
 
     # GeoColor — natural colour (day) or IR+city-lights composite (night)
     process_geocolor(s3, scan_time)
+
+    # Cyclone sectors — high-resolution crops centred on each active storm
+    print("\nFetching active storm data for cyclone sectors...")
+    storms = fetch_active_storms()
+    process_cyclone_sectors(s3, scan_time, storms)
 
     # Write a plain-text timestamp so the website can show freshness
     ts_path = os.path.join(OUTPUT_DIR, 'last_updated.txt')
