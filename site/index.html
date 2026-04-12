@@ -124,10 +124,77 @@
             border-radius: 3px;
             flex-shrink: 0;
         }
+
+        /* ---- Cyclone sectors panel ---- */
+        #cyclone-panel {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            z-index: 1000;
+            background: rgba(0,0,0,0.75);
+            color: #fff;
+            padding: 8px 12px 10px;
+            border-radius: 6px;
+            font-family: monospace;
+            font-size: 12px;
+            min-width: 170px;
+            max-width: 220px;
+        }
+        #cyclone-panel .cp-header {
+            font-size: 11px;
+            color: #aaa;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            margin-bottom: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        #cyclone-panel .cp-header span { color: #7cf; font-weight: bold; }
+        .sector-btn {
+            display: block;
+            width: 100%;
+            background: rgba(255,255,255,0.07);
+            border: 1px solid #555;
+            color: #eee;
+            border-radius: 4px;
+            padding: 5px 8px;
+            margin-bottom: 5px;
+            cursor: pointer;
+            text-align: left;
+            font-family: monospace;
+            font-size: 12px;
+            line-height: 1.4;
+        }
+        .sector-btn:hover { background: rgba(119,204,255,0.15); border-color: #7cf; }
+        .sector-btn.active { background: rgba(119,204,255,0.22); border-color: #7cf; color: #7cf; }
+        .sector-btn .sb-name { font-weight: bold; font-size: 13px; }
+        .sector-btn .sb-info { font-size: 10px; color: #bbb; }
+        .sector-btn.active .sb-info { color: #9de; }
+        #full-disk-btn {
+            display: none;
+            width: 100%;
+            background: rgba(255,180,60,0.12);
+            border: 1px solid #fa8;
+            color: #fa8;
+            border-radius: 4px;
+            padding: 4px 8px;
+            margin-top: 4px;
+            cursor: pointer;
+            font-family: monospace;
+            font-size: 11px;
+        }
+        #full-disk-btn:hover { background: rgba(255,180,60,0.25); }
+        #cp-no-storms { font-size: 11px; color: #777; margin-top: 2px; }
     </style>
 </head>
 <body>
     <div id="map"></div>
+    <div id="cyclone-panel">
+        <div class="cp-header">Tropical Cyclones <span id="cp-count"></span></div>
+        <div id="cp-storm-list"><span id="cp-no-storms">Loading...</span></div>
+        <button id="full-disk-btn">&#8617; Full Disk</button>
+    </div>
     <div id="timestamp">Loading...</div>
     <div id="animation-controls">
         <button id="play-pause-btn" title="Play / Pause animation">⏸</button>
@@ -353,6 +420,196 @@
 
         // Set initial legend for the default GeoColor layer (no legend shown)
         updateLegend();
+
+        // ----------------------------------------------------------------
+        // Cyclone sectors
+        // ----------------------------------------------------------------
+        var sectorMode        = false;
+        var activeSectorId    = null;
+        var sectorOverlays    = {};   // safe_id → { geocolor, visible, infrared, water_vapor }
+        var sectorBounds      = {};   // safe_id → [[south,west],[north,east]]
+        var fullDiskView      = { center: [20, 140], zoom: 3 };
+
+        // Remember which full-disk layer is active before entering sector mode
+        var activeSectorLayer = null;
+
+        var SECTOR_PRODUCTS = [
+            { key: 'geocolor',    layer: geocolorLayer,   suffix: 'geocolor'    },
+            { key: 'visible',     layer: visibleLayer,    suffix: 'visible'     },
+            { key: 'infrared',    layer: infraredLayer,   suffix: 'infrared'    },
+            { key: 'water_vapor', layer: waterVaporLayer, suffix: 'water_vapor' },
+        ];
+
+        function sectorFrameUrl(safe_id, suffix, index) {
+            var pad = index < 10 ? '0' + index : '' + index;
+            return 'data/' + suffix + '_sector_' + safe_id + '_' + pad + '.png';
+        }
+
+        function enterSector(meta) {
+            var sid = meta.safe_id;
+            if (!sectorOverlays[sid]) {
+                // Create imageOverlay instances for this sector
+                var lbounds = [[meta.bounds[2], meta.bounds[0]],
+                               [meta.bounds[3], meta.bounds[1]]];
+                sectorBounds[sid] = lbounds;
+                var ovs = {};
+                SECTOR_PRODUCTS.forEach(function(sp) {
+                    ovs[sp.key] = L.imageOverlay(
+                        sectorFrameUrl(sid, sp.suffix, 0),
+                        lbounds,
+                        { opacity: sp.key === 'geocolor' ? 0.95 : 0.85 }
+                    );
+                });
+                sectorOverlays[sid] = ovs;
+            }
+
+            // Track which full-disk overlays are currently visible
+            var wasActive = {};
+            SECTOR_PRODUCTS.forEach(function(sp) {
+                wasActive[sp.key] = map.hasLayer(sp.layer);
+                if (wasActive[sp.key]) map.removeLayer(sp.layer);
+            });
+
+            // Show the matching sector overlay(s)
+            SECTOR_PRODUCTS.forEach(function(sp) {
+                if (wasActive[sp.key]) {
+                    sectorOverlays[sid][sp.key].addTo(map);
+                }
+            });
+
+            // Save current map view before zoom
+            if (!sectorMode) {
+                fullDiskView.center = map.getCenter();
+                fullDiskView.zoom   = map.getZoom();
+            }
+
+            sectorMode     = true;
+            activeSectorId = sid;
+
+            map.fitBounds(sectorBounds[sid], { padding: [20, 20] });
+
+            // Sync animation frame immediately
+            updateSectorFrame(currentFrame);
+
+            document.getElementById('full-disk-btn').style.display = 'block';
+            document.querySelectorAll('.sector-btn').forEach(function(b) {
+                b.classList.toggle('active', b.dataset.safeId === sid);
+            });
+        }
+
+        function exitSectorMode() {
+            if (!sectorMode) return;
+            var sid = activeSectorId;
+
+            // Determine which sector layers are visible, mirror back to full-disk
+            SECTOR_PRODUCTS.forEach(function(sp) {
+                if (sectorOverlays[sid] && map.hasLayer(sectorOverlays[sid][sp.key])) {
+                    map.removeLayer(sectorOverlays[sid][sp.key]);
+                    sp.layer.addTo(map);
+                }
+            });
+
+            sectorMode     = false;
+            activeSectorId = null;
+
+            map.setView(fullDiskView.center, fullDiskView.zoom);
+            document.getElementById('full-disk-btn').style.display = 'none';
+            document.querySelectorAll('.sector-btn').forEach(function(b) {
+                b.classList.remove('active');
+            });
+            updateLegend();
+        }
+
+        function updateSectorFrame(frameIndex) {
+            if (!sectorMode || !activeSectorId) return;
+            var sid = activeSectorId;
+            SECTOR_PRODUCTS.forEach(function(sp) {
+                if (sectorOverlays[sid] && map.hasLayer(sectorOverlays[sid][sp.key])) {
+                    sectorOverlays[sid][sp.key].setUrl(
+                        sectorFrameUrl(sid, sp.suffix, frameIndex)
+                    );
+                }
+            });
+        }
+
+        // Patch updateAnimationFrame to also update sector overlays
+        var _origUpdateFrame = updateAnimationFrame;
+        updateAnimationFrame = function() {
+            _origUpdateFrame();
+            if (sectorMode) updateSectorFrame(currentFrame);
+        };
+
+        // Keep sector overlays in sync when layers are toggled via the control
+        var _sectorSwapping = false;
+        map.on('layeradd layerremove', function(e) {
+            if (_sectorSwapping || !sectorMode || !activeSectorId) return;
+            var sid = activeSectorId;
+            SECTOR_PRODUCTS.forEach(function(sp) {
+                if (e.layer !== sp.layer) return;
+                var secOv = sectorOverlays[sid] && sectorOverlays[sid][sp.key];
+                if (!secOv) return;
+                _sectorSwapping = true;
+                if (e.type === 'layeradd') {
+                    // Swap the just-added full-disk layer for the sector version
+                    map.removeLayer(sp.layer);
+                    secOv.addTo(map);
+                    secOv.setUrl(sectorFrameUrl(sid, sp.suffix, currentFrame));
+                } else {
+                    // User removed the full-disk layer — hide the sector version too
+                    if (map.hasLayer(secOv)) map.removeLayer(secOv);
+                }
+                _sectorSwapping = false;
+            });
+        });
+
+        document.getElementById('full-disk-btn').addEventListener('click', exitSectorMode);
+
+        // Load sector metadata and build the panel
+        function loadSectorPanel() {
+            fetch('data/sectors_meta.json?nocache=' + Date.now())
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    var sectors = data.sectors || [];
+                    var list    = document.getElementById('cp-storm-list');
+                    var countEl = document.getElementById('cp-count');
+                    countEl.textContent = sectors.length ? '(' + sectors.length + ')' : '';
+
+                    if (sectors.length === 0) {
+                        list.innerHTML = '<span id="cp-no-storms">No active storms</span>';
+                        return;
+                    }
+
+                    list.innerHTML = '';
+                    sectors.forEach(function(meta) {
+                        var btn = document.createElement('button');
+                        btn.className       = 'sector-btn';
+                        btn.dataset.safeId  = meta.safe_id;
+
+                        var windStr = meta.wind_kt ? meta.wind_kt + ' kt' : '';
+                        var presStr = meta.pressure_mb ? meta.pressure_mb + ' mb' : '';
+                        var detail  = [meta.classification_label, windStr, presStr]
+                                        .filter(Boolean).join(' · ');
+
+                        btn.innerHTML = '<div class="sb-name">' + meta.name + '</div>'
+                                      + '<div class="sb-info">' + detail + '</div>';
+
+                        btn.addEventListener('click', function() {
+                            if (sectorMode && activeSectorId === meta.safe_id) {
+                                exitSectorMode();
+                            } else {
+                                enterSector(meta);
+                            }
+                        });
+                        list.appendChild(btn);
+                    });
+                })
+                .catch(function() {
+                    document.getElementById('cp-storm-list').innerHTML =
+                        '<span id="cp-no-storms">No storm data</span>';
+                });
+        }
+
+        loadSectorPanel();
 
         // ----------------------------------------------------------------
         // Timestamp
