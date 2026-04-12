@@ -1,4 +1,5 @@
 import boto3
+import gc
 import shutil
 import json
 import urllib.request
@@ -303,6 +304,50 @@ def _render_sector_band(arr, x, y, sat_proj, extent, product_base, colormap,
     print(f"    Saved sector: {out}")
 
 
+def _crop_band_to_sector(arr, x, y, sat_proj, bounds):
+    """Crop a full-disk band array to just the pixels covering the sector.
+
+    Converts the sector's lat/lon corners to geostationary x/y metres,
+    then slices arr/x/y to that rectangle with a small pixel buffer.
+
+    A 16° sector is ~13 % of the full disk in each axis, so the result
+    is roughly 365×365 instead of 2 750×2 750 — about 56× fewer elements.
+    This keeps Cartopy's reprojection buffers small and prevents OOM when
+    rendering many sector products in one run.
+
+    Returns (arr_crop, x_crop, y_crop); falls back to originals on error.
+    """
+    try:
+        pc   = ccrs.PlateCarree()
+        lons = np.array([bounds[0], bounds[0], bounds[1], bounds[1]])
+        lats = np.array([bounds[2], bounds[3], bounds[2], bounds[3]])
+        pts  = sat_proj.transform_points(pc, lons, lats)
+        gx_min = np.nanmin(pts[:, 0])
+        gx_max = np.nanmax(pts[:, 0])
+        gy_min = np.nanmin(pts[:, 1])
+        gy_max = np.nanmax(pts[:, 1])
+
+        # x is ascending, y is descending
+        ix = np.where((x >= gx_min) & (x <= gx_max))[0]
+        iy = np.where((y >= gy_min) & (y <= gy_max))[0]
+        if len(ix) == 0 or len(iy) == 0:
+            return arr, x, y
+
+        # Add a small pixel border so the sector edge isn't clipped
+        PAD = 10
+        ix_lo = max(0,       ix[0]  - PAD)
+        ix_hi = min(len(x),  ix[-1] + PAD + 1)
+        iy_lo = max(0,       iy[0]  - PAD)
+        iy_hi = min(len(y),  iy[-1] + PAD + 1)
+
+        return (arr[iy_lo:iy_hi, ix_lo:ix_hi],
+                x[ix_lo:ix_hi],
+                y[iy_lo:iy_hi])
+    except Exception as e:
+        print(f"    Warning: sector crop failed ({e}), using full array")
+        return arr, x, y
+
+
 def process_cyclone_sectors(s3_client, scan_time, storms):
     """Generate high-resolution sector images for each active cyclone.
 
@@ -346,11 +391,27 @@ def process_cyclone_sectors(s3_client, scan_time, storms):
 
         safe_id = sid.replace('/', '_')
 
+        # Crop every band to the sector extent before rendering.
+        # A 16° sector is ~13 % of the full disk per axis, so the cropped
+        # arrays are ~365×365 instead of 2 750×2 750 — ~56× fewer elements.
+        # This keeps Cartopy's reprojection buffers small and prevents OOM.
+        b1s,  x1s,  y1s  = _crop_band_to_sector(b1,  x1,  y1,  goes_proj, bounds) if b1  is not None else (None, None, None)
+        b3s,  x3s,  y3s  = _crop_band_to_sector(b3,  x3,  y3,  goes_proj, bounds) if b3  is not None else (None, None, None)
+        b9s,  x9s,  y9s  = _crop_band_to_sector(b9,  x9,  y9,  goes_proj, bounds) if b9  is not None else (None, None, None)
+        b13s, x13s, y13s = _crop_band_to_sector(b13, x13, y13, goes_proj, bounds) if b13 is not None else (None, None, None)
+
+        if b1s is not None:
+            print(f"    Cropped Band 1:  {b1.shape} → {b1s.shape}")
+        if b3s is not None:
+            print(f"    Cropped Band 3:  {b3.shape} → {b3s.shape}")
+        if b13s is not None:
+            print(f"    Cropped Band 13: {b13.shape} → {b13s.shape}")
+
         # ---- GeoColor sector ----
-        if b1 is not None and b3 is not None:
-            b1_f = np.nan_to_num(b1, nan=0.0)
-            b3_f = np.nan_to_num(b3, nan=0.0)
-            # Match Band 3 shape to Band 1
+        if b1s is not None and b3s is not None:
+            b1_f = np.nan_to_num(b1s, nan=0.0)
+            b3_f = np.nan_to_num(b3s, nan=0.0)
+            # If the two cropped bands have different shapes, resize to match
             if b3_f.shape != b1_f.shape:
                 b3_f = zoom(b3_f, (b1_f.shape[0]/b3_f.shape[0],
                                    b1_f.shape[1]/b3_f.shape[1]), order=1)
@@ -359,8 +420,8 @@ def process_cyclone_sectors(s3_client, scan_time, storms):
                 R = np.power(np.clip(b3_f, 0, 1), 0.6)
                 G = np.power(np.clip(0.5*b3_f + 0.5*b1_f, 0, 1), 0.6)
                 B = np.power(np.clip(b1_f, 0, 1), 0.6)
-                if b13 is not None:
-                    bt13_f = np.where(np.isnan(b13), 320.0, b13)
+                if b13s is not None:
+                    bt13_f = np.where(np.isnan(b13s), 320.0, b13s)
                     if bt13_f.shape != R.shape:
                         bt13_f = zoom(bt13_f, (R.shape[0]/bt13_f.shape[0],
                                                R.shape[1]/bt13_f.shape[1]), order=1)
@@ -370,18 +431,18 @@ def process_cyclone_sectors(s3_client, scan_time, storms):
                     B = np.clip(B + ce*(1-B), 0, 1)
                 rgb = np.dstack([R, G, B])
                 fig, ax = _make_figure_sector(bounds)
-                img_ext = (x1[0], x1[-1], y1[-1], y1[0])
+                img_ext = (x1s[0], x1s[-1], y1s[-1], y1s[0])
                 ax.imshow(rgb, origin='upper', extent=img_ext,
                           transform=goes_proj, interpolation='none')
-            else:  # nighttime — use IR cloud + city-lights logic
-                if b13 is not None:
-                    bt13_n = np.where(np.isnan(b13), 320.0, b13)
+            else:  # nighttime — IR cloud composite
+                if b13s is not None:
+                    bt13_n = np.where(np.isnan(b13s), 320.0, b13s)
                     co = np.clip((275.0 - bt13_n) / 55.0, 0.0, 1.0)
                     R2 = co * 0.80; G2 = co * 0.88; B2 = co * 1.00
                     A2 = np.clip(co * 1.5, 0.0, 1.0)
                     rgba = np.dstack([R2, G2, B2, A2]).astype(np.float32)
                     fig, ax = _make_figure_sector(bounds)
-                    img_ext = (x13[0], x13[-1], y13[-1], y13[0])
+                    img_ext = (x13s[0], x13s[-1], y13s[-1], y13s[0])
                     ax.imshow(rgba, origin='upper', extent=img_ext,
                               transform=goes_proj, interpolation='none')
                 else:
@@ -395,20 +456,24 @@ def process_cyclone_sectors(s3_client, scan_time, storms):
             print(f"    Saved sector GeoColor.")
 
         # ---- Visible sector ----
-        if b3 is not None:
-            b3_vis = np.nan_to_num(b3, nan=0.0)
-            _render_sector_band(b3_vis, x3, y3, goes_proj, bounds,
+        if b3s is not None:
+            b3_vis = np.nan_to_num(b3s, nan=0.0)
+            _render_sector_band(b3_vis, x3s, y3s, goes_proj, bounds,
                                 f'visible_sector_{safe_id}', 'gray', 0.0, 1.0, gamma=0.6)
 
         # ---- Infrared sector ----
-        if b13 is not None:
-            _render_sector_band(b13, x13, y13, goes_proj, bounds,
+        if b13s is not None:
+            _render_sector_band(b13s, x13s, y13s, goes_proj, bounds,
                                 f'infrared_sector_{safe_id}', _ir_colormap(), 190, 310)
 
         # ---- Water vapor sector ----
-        if b9 is not None:
-            _render_sector_band(b9, x9, y9, goes_proj, bounds,
+        if b9s is not None:
+            _render_sector_band(b9s, x9s, y9s, goes_proj, bounds,
                                 f'water_vapor_sector_{safe_id}', _wv_colormap(), 195, 280)
+
+        # Free cropped arrays and force GC before next storm
+        del b1s, b3s, b9s, b13s
+        gc.collect()
 
         sectors_meta.append({
             'id':                   sid,
