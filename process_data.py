@@ -51,13 +51,6 @@ SECTOR_PAD_DEG = 8.0
 SECTOR_FIG_WIDTH = 8.0   # inches
 SECTOR_DPI       = 200   # → 1 600 px wide for ~16° lon ≈ 100 px/° vs 15 px/° full disk
 
-# For sector downloads we do NOT downsample high-resolution bands.
-# Band 3 (0.5 km, native 11 000 px) covers 16° in ~1 467 px — close to 1:1
-# with our 1 600 px sector output, giving true native-resolution imagery.
-# Band 1 (1 km, native 5 500 px) similarly stays unscaled.
-# 2 km bands (9, 13) are natively only 2 750 px; no improvement possible,
-# so they use MAX_BAND_PX (already at native).
-SECTOR_BAND_MAX_PX_HI = None   # None = no downsampling (native resolution)
 
 # Module-level cache so each band is downloaded and loaded only once per run,
 # even if it is needed by multiple products (e.g. Band 13 for both the IR
@@ -324,12 +317,13 @@ def process_cyclone_sectors(s3_client, scan_time, storms):
         _write_sectors_meta([])
         return
 
-    # Download visible bands at native resolution for true high-res sectors.
-    # Band 3 (0.5 km, native ~11 000 px): sector covers ~1 467 px → 1 600 px output (≈1:1)
-    # Band 1 (1 km,   native ~5 500 px):  sector covers   ~730 px → 1 600 px output (2.2×)
-    # Bands 9, 13 (2 km, native ~2 750 px): already at MAX_BAND_PX, nothing to gain.
-    b1,  x1,  y1,  goes_proj = _download_band(s3_client, 1,  scan_time, max_px=SECTOR_BAND_MAX_PX_HI)
-    b3,  x3,  y3,  _         = _download_band(s3_client, 3,  scan_time, max_px=SECTOR_BAND_MAX_PX_HI)
+    # Reuse the already-cached full-disk bands — no extra downloads needed.
+    # All four bands were fetched during full-disk processing and are in
+    # _band_cache at MAX_BAND_PX resolution.  Sectors render a small
+    # geographic slice of this data, so matplotlib naturally shows more
+    # detail per screen pixel than the full-disk view does.
+    b1,  x1,  y1,  goes_proj = _download_band(s3_client, 1,  scan_time)
+    b3,  x3,  y3,  _         = _download_band(s3_client, 3,  scan_time)
     b9,  x9,  y9,  _         = _download_band(s3_client, 9,  scan_time)
     b13, x13, y13, _         = _download_band(s3_client, 13, scan_time)
 
