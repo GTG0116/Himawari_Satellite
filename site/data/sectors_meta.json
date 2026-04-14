@@ -1,5 +1,5 @@
 {
-  "generated": "2026-04-14T13:42:10Z",
+  "generated": "2026-04-14T13:52:03Z",
   "sectors": [
     {
       "id": "WP0426",
@@ -11,7 +11,7 @@
       "classification_label": "Super Typhoon (Category 5)",
       "wind_kt": 130,
       "wind_mph": 150,
-      "pressure_mb": 925,
+      "pressure_mb": 930,
       "lat": 14.6,
       "lon": 146.0,
       "bounds": [
