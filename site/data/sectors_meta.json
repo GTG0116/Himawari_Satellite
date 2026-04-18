@@ -1,5 +1,5 @@
 {
-  "generated": "2026-04-18T07:42:00Z",
+  "generated": "2026-04-18T07:51:30Z",
   "sectors": [
     {
       "id": "WP0426",
@@ -7,18 +7,18 @@
       "name": "Sinlaku",
       "basin": "WP",
       "basin_name": "Western North Pacific",
-      "classification": "TY",
-      "classification_label": "Typhoon (Category 1)",
-      "wind_kt": 65,
-      "wind_mph": 75,
-      "pressure_mb": 979,
-      "lat": 22.3,
-      "lon": 146.4,
+      "classification": "TS",
+      "classification_label": "Tropical Storm",
+      "wind_kt": 60,
+      "wind_mph": 69,
+      "pressure_mb": 0,
+      "lat": 23.3,
+      "lon": 146.8,
       "bounds": [
-        138.4,
-        154.4,
-        14.3,
-        30.3
+        138.8,
+        154.8,
+        15.3,
+        31.3
       ]
     }
   ]
