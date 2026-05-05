@@ -1,4 +1,25 @@
 {
-  "generated": "2026-05-05T20:22:12Z",
-  "sectors": []
+  "generated": "2026-05-05T20:32:17Z",
+  "sectors": [
+    {
+      "id": "WP0526",
+      "safe_id": "WP0526",
+      "name": "Five",
+      "basin": "WP",
+      "basin_name": "Western North Pacific",
+      "classification": "TD",
+      "classification_label": "Tropical Depression",
+      "wind_kt": 30,
+      "wind_mph": 35,
+      "pressure_mb": 1003,
+      "lat": 8.4,
+      "lon": 148.3,
+      "bounds": [
+        140.3,
+        156.3,
+        0.40000000000000036,
+        16.4
+      ]
+    }
+  ]
 }
