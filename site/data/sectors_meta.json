@@ -1,10 +1,10 @@
 {
-  "generated": "2026-05-06T13:42:19Z",
+  "generated": "2026-05-06T13:52:05Z",
   "sectors": [
     {
       "id": "WP0526",
       "safe_id": "WP0526",
-      "name": "Five",
+      "name": "Hagupit",
       "basin": "WP",
       "basin_name": "Western North Pacific",
       "classification": "TS",
@@ -12,13 +12,13 @@
       "wind_kt": 35,
       "wind_mph": 40,
       "pressure_mb": 1003,
-      "lat": 7.4,
-      "lon": 146.9,
+      "lat": 7.1,
+      "lon": 145.7,
       "bounds": [
-        138.9,
-        154.9,
-        -0.5999999999999996,
-        15.4
+        137.7,
+        153.7,
+        -0.9000000000000004,
+        15.1
       ]
     }
   ]
