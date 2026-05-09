@@ -1,5 +1,5 @@
 {
-  "generated": "2026-05-09T13:02:04Z",
+  "generated": "2026-05-09T13:12:15Z",
   "sectors": [
     {
       "id": "WP0526",
@@ -7,18 +7,18 @@
       "name": "Hagupit",
       "basin": "WP",
       "basin_name": "Western North Pacific",
-      "classification": "TS",
-      "classification_label": "Tropical Storm",
-      "wind_kt": 35,
-      "wind_mph": 40,
+      "classification": "TD",
+      "classification_label": "Tropical Depression",
+      "wind_kt": 30,
+      "wind_mph": 35,
       "pressure_mb": 1004,
-      "lat": 9.4,
-      "lon": 135.8,
+      "lat": 9.3,
+      "lon": 134.4,
       "bounds": [
-        127.80000000000001,
-        143.8,
-        1.4000000000000004,
-        17.4
+        126.4,
+        142.4,
+        1.3000000000000007,
+        17.3
       ]
     }
   ]
