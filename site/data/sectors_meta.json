@@ -1,4 +1,25 @@
 {
-  "generated": "2026-05-31T20:31:59Z",
-  "sectors": []
+  "generated": "2026-05-31T20:42:06Z",
+  "sectors": [
+    {
+      "id": "WP0626",
+      "safe_id": "WP0626",
+      "name": "Jangmi",
+      "basin": "WP",
+      "basin_name": "Western North Pacific",
+      "classification": "TY",
+      "classification_label": "Typhoon (Category 1)",
+      "wind_kt": 70,
+      "wind_mph": 81,
+      "pressure_mb": 973,
+      "lat": 23.6,
+      "lon": 127.4,
+      "bounds": [
+        119.4,
+        135.4,
+        15.600000000000001,
+        31.6
+      ]
+    }
+  ]
 }
