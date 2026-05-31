@@ -1,5 +1,5 @@
 {
-  "generated": "2026-05-31T13:32:01Z",
+  "generated": "2026-05-31T13:42:04Z",
   "sectors": [
     {
       "id": "WP0626",
@@ -9,16 +9,16 @@
       "basin_name": "Western North Pacific",
       "classification": "TY",
       "classification_label": "Typhoon (Category 1)",
-      "wind_kt": 70,
-      "wind_mph": 81,
-      "pressure_mb": 976,
-      "lat": 21.8,
-      "lon": 127.8,
+      "wind_kt": 75,
+      "wind_mph": 86,
+      "pressure_mb": 973,
+      "lat": 22.8,
+      "lon": 127.7,
       "bounds": [
-        119.8,
-        135.8,
-        13.8,
-        29.8
+        119.7,
+        135.7,
+        14.8,
+        30.8
       ]
     }
   ]
