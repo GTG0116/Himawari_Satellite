@@ -1,5 +1,5 @@
 {
-  "generated": "2026-06-01T13:22:09Z",
+  "generated": "2026-06-01T13:32:15Z",
   "sectors": [
     {
       "id": "WP0626",
@@ -9,16 +9,16 @@
       "basin_name": "Western North Pacific",
       "classification": "TS",
       "classification_label": "Tropical Storm",
-      "wind_kt": 60,
-      "wind_mph": 69,
-      "pressure_mb": 979,
-      "lat": 25.6,
-      "lon": 127.4,
+      "wind_kt": 55,
+      "wind_mph": 63,
+      "pressure_mb": 982,
+      "lat": 26.7,
+      "lon": 127.5,
       "bounds": [
-        119.4,
-        135.4,
-        17.6,
-        33.6
+        119.5,
+        135.5,
+        18.7,
+        34.7
       ]
     }
   ]
