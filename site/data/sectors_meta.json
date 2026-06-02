@@ -1,4 +1,25 @@
 {
-  "generated": "2026-06-02T21:52:00Z",
-  "sectors": []
+  "generated": "2026-06-02T22:05:20Z",
+  "sectors": [
+    {
+      "id": "WP0626",
+      "safe_id": "WP0626",
+      "name": "Jangmi",
+      "basin": "WP",
+      "basin_name": "Western North Pacific",
+      "classification": "TS",
+      "classification_label": "Tropical Storm",
+      "wind_kt": 50,
+      "wind_mph": 58,
+      "pressure_mb": 983,
+      "lat": 33.3,
+      "lon": 135.0,
+      "bounds": [
+        127.0,
+        143.0,
+        25.299999999999997,
+        41.3
+      ]
+    }
+  ]
 }
