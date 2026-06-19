@@ -1,25 +1,4 @@
 {
-  "generated": "2026-06-19T04:12:23Z",
-  "sectors": [
-    {
-      "id": "WP0726",
-      "safe_id": "WP0726",
-      "name": "Seven",
-      "basin": "WP",
-      "basin_name": "Western North Pacific",
-      "classification": "TD",
-      "classification_label": "Tropical Depression",
-      "wind_kt": 30,
-      "wind_mph": 35,
-      "pressure_mb": 1005,
-      "lat": 12.9,
-      "lon": 143.1,
-      "bounds": [
-        135.1,
-        151.1,
-        4.9,
-        20.9
-      ]
-    }
-  ]
+  "generated": "2026-06-19T04:21:56Z",
+  "sectors": []
 }
