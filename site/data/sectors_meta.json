@@ -1,4 +1,25 @@
 {
-  "generated": "2026-06-21T11:42:18Z",
-  "sectors": []
+  "generated": "2026-06-21T11:52:12Z",
+  "sectors": [
+    {
+      "id": "WP0726",
+      "safe_id": "WP0726",
+      "name": "Mekkhala",
+      "basin": "WP",
+      "basin_name": "Western North Pacific",
+      "classification": "TY",
+      "classification_label": "Typhoon (Category 1)",
+      "wind_kt": 65,
+      "wind_mph": 75,
+      "pressure_mb": 988,
+      "lat": 16.1,
+      "lon": 131.9,
+      "bounds": [
+        123.9,
+        139.9,
+        8.100000000000001,
+        24.1
+      ]
+    }
+  ]
 }
