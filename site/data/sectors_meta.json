@@ -1,5 +1,5 @@
 {
-  "generated": "2026-06-22T20:11:40Z",
+  "generated": "2026-06-22T20:21:38Z",
   "sectors": [
     {
       "id": "WP0726",
@@ -11,14 +11,14 @@
       "classification_label": "Typhoon (Category 4)",
       "wind_kt": 125,
       "wind_mph": 144,
-      "pressure_mb": 937,
-      "lat": 18.1,
-      "lon": 126.1,
+      "pressure_mb": 934,
+      "lat": 18.3,
+      "lon": 125.6,
       "bounds": [
-        118.1,
-        134.1,
-        10.100000000000001,
-        26.1
+        117.6,
+        133.6,
+        10.3,
+        26.3
       ]
     },
     {
