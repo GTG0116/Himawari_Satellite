@@ -1,5 +1,5 @@
 {
-  "generated": "2026-06-23T14:42:10Z",
+  "generated": "2026-06-23T14:52:24Z",
   "sectors": [
     {
       "id": "WP0726",
@@ -9,16 +9,16 @@
       "basin_name": "Western North Pacific",
       "classification": "TY",
       "classification_label": "Typhoon (Category 3)",
-      "wind_kt": 110,
-      "wind_mph": 127,
-      "pressure_mb": 0,
-      "lat": 19.1,
-      "lon": 124.8,
+      "wind_kt": 100,
+      "wind_mph": 115,
+      "pressure_mb": 954,
+      "lat": 19.6,
+      "lon": 124.7,
       "bounds": [
-        116.8,
-        132.8,
-        11.100000000000001,
-        27.1
+        116.7,
+        132.7,
+        11.600000000000001,
+        27.6
       ]
     },
     {
@@ -27,16 +27,16 @@
       "name": "Higos",
       "basin": "WP",
       "basin_name": "Western North Pacific",
-      "classification": "TS",
-      "classification_label": "Tropical Storm",
-      "wind_kt": 35,
-      "wind_mph": 40,
+      "classification": "TD",
+      "classification_label": "Tropical Depression",
+      "wind_kt": 30,
+      "wind_mph": 35,
       "pressure_mb": 1003,
       "lat": 14.8,
-      "lon": 144.9,
+      "lon": 143.9,
       "bounds": [
-        136.9,
-        152.9,
+        135.9,
+        151.9,
         6.800000000000001,
         22.8
       ]
