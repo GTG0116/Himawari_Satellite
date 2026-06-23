@@ -1,5 +1,5 @@
 {
-  "generated": "2026-06-23T02:02:30Z",
+  "generated": "2026-06-23T02:12:18Z",
   "sectors": [
     {
       "id": "WP0726",
@@ -24,21 +24,21 @@
     {
       "id": "WP0826",
       "safe_id": "WP0826",
-      "name": "Eight",
+      "name": "Higos",
       "basin": "WP",
       "basin_name": "Western North Pacific",
-      "classification": "TD",
-      "classification_label": "Tropical Depression",
-      "wind_kt": 30,
-      "wind_mph": 35,
+      "classification": "TS",
+      "classification_label": "Tropical Storm",
+      "wind_kt": 35,
+      "wind_mph": 40,
       "pressure_mb": 1005,
-      "lat": 14.5,
-      "lon": 146.5,
+      "lat": 14.7,
+      "lon": 145.6,
       "bounds": [
-        138.5,
-        154.5,
-        6.5,
-        22.5
+        137.6,
+        153.6,
+        6.699999999999999,
+        22.7
       ]
     }
   ]
