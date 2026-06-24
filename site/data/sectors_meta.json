@@ -1,5 +1,5 @@
 {
-  "generated": "2026-06-24T20:12:21Z",
+  "generated": "2026-06-24T20:22:03Z",
   "sectors": [
     {
       "id": "WP0726",
@@ -7,18 +7,18 @@
       "name": "Mekkhala",
       "basin": "WP",
       "basin_name": "Western North Pacific",
-      "classification": "TY",
-      "classification_label": "Typhoon (Category 1)",
-      "wind_kt": 65,
-      "wind_mph": 75,
-      "pressure_mb": 0,
-      "lat": 22.1,
-      "lon": 124.8,
+      "classification": "TS",
+      "classification_label": "Tropical Storm",
+      "wind_kt": 55,
+      "wind_mph": 63,
+      "pressure_mb": 983,
+      "lat": 22.6,
+      "lon": 125.0,
       "bounds": [
-        116.8,
-        132.8,
-        14.100000000000001,
-        30.1
+        117.0,
+        133.0,
+        14.600000000000001,
+        30.6
       ]
     },
     {
