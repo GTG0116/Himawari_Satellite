@@ -1,5 +1,5 @@
 {
-  "generated": "2026-06-25T13:42:15Z",
+  "generated": "2026-06-25T13:52:17Z",
   "sectors": [
     {
       "id": "WP0726",
@@ -11,14 +11,14 @@
       "classification_label": "Tropical Storm",
       "wind_kt": 50,
       "wind_mph": 58,
-      "pressure_mb": 986,
-      "lat": 24.8,
-      "lon": 126.0,
+      "pressure_mb": 984,
+      "lat": 25.5,
+      "lon": 126.2,
       "bounds": [
-        118.0,
-        134.0,
-        16.8,
-        32.8
+        118.2,
+        134.2,
+        17.5,
+        33.5
       ]
     },
     {
