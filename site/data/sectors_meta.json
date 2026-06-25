@@ -1,45 +1,4 @@
 {
-  "generated": "2026-06-25T04:22:47Z",
-  "sectors": [
-    {
-      "id": "WP0726",
-      "safe_id": "WP0726",
-      "name": "Mekkhala",
-      "basin": "WP",
-      "basin_name": "Western North Pacific",
-      "classification": "TS",
-      "classification_label": "Tropical Storm",
-      "wind_kt": 50,
-      "wind_mph": 58,
-      "pressure_mb": 986,
-      "lat": 23.7,
-      "lon": 125.3,
-      "bounds": [
-        117.3,
-        133.3,
-        15.7,
-        31.7
-      ]
-    },
-    {
-      "id": "WP0826",
-      "safe_id": "WP0826",
-      "name": "Higos",
-      "basin": "WP",
-      "basin_name": "Western North Pacific",
-      "classification": "TS",
-      "classification_label": "Tropical Storm",
-      "wind_kt": 40,
-      "wind_mph": 46,
-      "pressure_mb": 1002,
-      "lat": 17.8,
-      "lon": 137.6,
-      "bounds": [
-        129.6,
-        145.6,
-        9.8,
-        25.8
-      ]
-    }
-  ]
+  "generated": "2026-06-25T04:32:32Z",
+  "sectors": []
 }
