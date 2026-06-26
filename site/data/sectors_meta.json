@@ -1,5 +1,5 @@
 {
-  "generated": "2026-06-26T13:42:08Z",
+  "generated": "2026-06-26T13:52:12Z",
   "sectors": [
     {
       "id": "WP0726",
@@ -11,14 +11,14 @@
       "classification_label": "Tropical Storm",
       "wind_kt": 35,
       "wind_mph": 40,
-      "pressure_mb": 992,
-      "lat": 28.0,
-      "lon": 128.0,
+      "pressure_mb": 0,
+      "lat": 28.5,
+      "lon": 129.3,
       "bounds": [
-        120.0,
-        136.0,
-        20.0,
-        36.0
+        121.30000000000001,
+        137.3,
+        20.5,
+        36.5
       ]
     },
     {
@@ -29,16 +29,16 @@
       "basin_name": "Western North Pacific",
       "classification": "TS",
       "classification_label": "Tropical Storm",
-      "wind_kt": 45,
-      "wind_mph": 52,
+      "wind_kt": 35,
+      "wind_mph": 40,
       "pressure_mb": 0,
-      "lat": 28.4,
-      "lon": 134.6,
+      "lat": 31.8,
+      "lon": 136.1,
       "bounds": [
-        126.6,
-        142.6,
-        20.4,
-        36.4
+        128.1,
+        144.1,
+        23.8,
+        39.8
       ]
     }
   ]
