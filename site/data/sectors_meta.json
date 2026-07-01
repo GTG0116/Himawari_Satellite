@@ -1,25 +1,4 @@
 {
-  "generated": "2026-07-01T15:02:18Z",
-  "sectors": [
-    {
-      "id": "WP0926",
-      "safe_id": "WP0926",
-      "name": "Nine",
-      "basin": "WP",
-      "basin_name": "Western North Pacific",
-      "classification": "TS",
-      "classification_label": "Tropical Storm",
-      "wind_kt": 35,
-      "wind_mph": 40,
-      "pressure_mb": 1001,
-      "lat": 9.8,
-      "lon": 162.3,
-      "bounds": [
-        154.3,
-        170.3,
-        1.8000000000000007,
-        17.8
-      ]
-    }
-  ]
+  "generated": "2026-07-01T20:52:42Z",
+  "sectors": []
 }
