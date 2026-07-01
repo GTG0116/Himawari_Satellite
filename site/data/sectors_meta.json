@@ -1,5 +1,5 @@
 {
-  "generated": "2026-07-01T13:22:17Z",
+  "generated": "2026-07-01T13:31:39Z",
   "sectors": [
     {
       "id": "WP0926",
@@ -7,18 +7,18 @@
       "name": "Nine",
       "basin": "WP",
       "basin_name": "Western North Pacific",
-      "classification": "TD",
-      "classification_label": "Tropical Depression",
-      "wind_kt": 30,
-      "wind_mph": 35,
+      "classification": "TS",
+      "classification_label": "Tropical Storm",
+      "wind_kt": 35,
+      "wind_mph": 40,
       "pressure_mb": 1001,
-      "lat": 9.2,
-      "lon": 163.0,
+      "lat": 9.8,
+      "lon": 162.3,
       "bounds": [
-        155.0,
-        171.0,
-        1.1999999999999993,
-        17.2
+        154.3,
+        170.3,
+        1.8000000000000007,
+        17.8
       ]
     }
   ]
