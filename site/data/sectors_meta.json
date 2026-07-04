@@ -1,4 +1,45 @@
 {
-  "generated": "2026-07-02T03:12:18Z",
-  "sectors": []
+  "generated": "2026-07-04T09:22:39Z",
+  "sectors": [
+    {
+      "id": "WP0926",
+      "safe_id": "WP0926",
+      "name": "Bavi",
+      "basin": "WP",
+      "basin_name": "Western North Pacific",
+      "classification": "ST",
+      "classification_label": "Super Typhoon (Category 5)",
+      "wind_kt": 145,
+      "wind_mph": 167,
+      "pressure_mb": 913,
+      "lat": 12.5,
+      "lon": 150.8,
+      "bounds": [
+        142.8,
+        158.8,
+        4.5,
+        20.5
+      ]
+    },
+    {
+      "id": "WP1026",
+      "safe_id": "WP1026",
+      "name": "Maysak",
+      "basin": "WP",
+      "basin_name": "Western North Pacific",
+      "classification": "TS",
+      "classification_label": "Tropical Storm",
+      "wind_kt": 45,
+      "wind_mph": 52,
+      "pressure_mb": 991,
+      "lat": 20.6,
+      "lon": 107.8,
+      "bounds": [
+        99.8,
+        115.8,
+        12.600000000000001,
+        28.6
+      ]
+    }
+  ]
 }
