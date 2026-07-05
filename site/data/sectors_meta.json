@@ -1,5 +1,5 @@
 {
-  "generated": "2026-07-05T14:01:59Z",
+  "generated": "2026-07-05T14:12:38Z",
   "sectors": [
     {
       "id": "WP0926",
@@ -9,16 +9,16 @@
       "basin_name": "Western North Pacific",
       "classification": "ST",
       "classification_label": "Super Typhoon (Category 5)",
-      "wind_kt": 145,
-      "wind_mph": 167,
-      "pressure_mb": 911,
-      "lat": 13.4,
-      "lon": 148.1,
+      "wind_kt": 155,
+      "wind_mph": 178,
+      "pressure_mb": 901,
+      "lat": 13.7,
+      "lon": 146.9,
       "bounds": [
-        140.1,
-        156.1,
-        5.4,
-        21.4
+        138.9,
+        154.9,
+        5.699999999999999,
+        21.7
       ]
     },
     {
