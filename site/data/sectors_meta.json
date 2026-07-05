@@ -1,5 +1,5 @@
 {
-  "generated": "2026-07-05T19:51:31Z",
+  "generated": "2026-07-05T20:02:46Z",
   "sectors": [
     {
       "id": "WP0926",
@@ -12,33 +12,13 @@
       "wind_kt": 155,
       "wind_mph": 178,
       "pressure_mb": 901,
-      "lat": 13.7,
-      "lon": 146.9,
+      "lat": 14.0,
+      "lon": 146.1,
       "bounds": [
-        138.9,
-        154.9,
-        5.699999999999999,
-        21.7
-      ]
-    },
-    {
-      "id": "WP1026",
-      "safe_id": "WP1026",
-      "name": "Maysak",
-      "basin": "WP",
-      "basin_name": "Western North Pacific",
-      "classification": "TS",
-      "classification_label": "Tropical Storm",
-      "wind_kt": 50,
-      "wind_mph": 58,
-      "pressure_mb": 0,
-      "lat": 21.6,
-      "lon": 107.9,
-      "bounds": [
-        99.9,
-        115.9,
-        13.600000000000001,
-        29.6
+        138.1,
+        154.1,
+        6.0,
+        22.0
       ]
     }
   ]
