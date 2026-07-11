@@ -1,5 +1,5 @@
 {
-  "generated": "2026-07-11T21:12:02Z",
+  "generated": "2026-07-11T21:22:28Z",
   "sectors": [
     {
       "id": "WP0926",
@@ -7,18 +7,18 @@
       "name": "Bavi",
       "basin": "WP",
       "basin_name": "Western North Pacific",
-      "classification": "TY",
-      "classification_label": "Typhoon (Category 1)",
-      "wind_kt": 80,
-      "wind_mph": 92,
-      "pressure_mb": 952,
-      "lat": 27.6,
-      "lon": 121.8,
+      "classification": "TS",
+      "classification_label": "Tropical Storm",
+      "wind_kt": 60,
+      "wind_mph": 69,
+      "pressure_mb": 0,
+      "lat": 28.7,
+      "lon": 120.4,
       "bounds": [
-        113.8,
-        129.8,
-        19.6,
-        35.6
+        112.4,
+        128.4,
+        20.7,
+        36.7
       ]
     }
   ]
