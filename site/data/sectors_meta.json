@@ -1,0 +1,65 @@
+{
+  "generated": "2026-10-05T04:22:44Z",
+  "sectors": [
+    {
+      "id": "EP1526",
+      "safe_id": "EP1526",
+      "name": "Nolo",
+      "basin": "EP",
+      "basin_name": "Eastern North Pacific",
+      "classification": "TY",
+      "classification_label": "Typhoon (Category 3)",
+      "wind_kt": 105,
+      "wind_mph": 121,
+      "pressure_mb": 0,
+      "lat": 24.8,
+      "lon": 179.3,
+      "bounds": [
+        171.3,
+        187.3,
+        16.8,
+        32.8
+      ]
+    },
+    {
+      "id": "WP2626",
+      "safe_id": "WP2626",
+      "name": null,
+      "basin": "WP",
+      "basin_name": "Western North Pacific",
+      "classification": "ST",
+      "classification_label": "Super Typhoon (Category 5)",
+      "wind_kt": 130,
+      "wind_mph": 150,
+      "pressure_mb": 916,
+      "lat": 25.2,
+      "lon": 146.5,
+      "bounds": [
+        138.5,
+        154.5,
+        17.2,
+        33.2
+      ]
+    },
+    {
+      "id": "WP2726",
+      "safe_id": "WP2726",
+      "name": "Koguma",
+      "basin": "WP",
+      "basin_name": "Western North Pacific",
+      "classification": "TD",
+      "classification_label": "Tropical Depression",
+      "wind_kt": 30,
+      "wind_mph": 35,
+      "pressure_mb": 1002,
+      "lat": 10.5,
+      "lon": 168.0,
+      "bounds": [
+        160.0,
+        176.0,
+        2.5,
+        18.5
+      ]
+    }
+  ]
+}
