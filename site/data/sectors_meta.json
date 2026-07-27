@@ -1,0 +1,25 @@
+{
+  "generated": "2026-09-20T07:31:10Z",
+  "sectors": [
+    {
+      "id": "WP2426",
+      "safe_id": "WP2426",
+      "name": "Dujuan",
+      "basin": "WP",
+      "basin_name": "Western North Pacific",
+      "classification": "TS",
+      "classification_label": "Tropical Storm",
+      "wind_kt": 60,
+      "wind_mph": 69,
+      "pressure_mb": 978,
+      "lat": 28.7,
+      "lon": 137.5,
+      "bounds": [
+        129.5,
+        145.5,
+        20.7,
+        36.7
+      ]
+    }
+  ]
+}
