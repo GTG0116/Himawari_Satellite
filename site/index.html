@@ -1,0 +1,675 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Himawari-9 Satellite Viewer</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body { margin: 0; padding: 0; background: #1a1a2e; }
+        #map { position: absolute; top: 0; bottom: 0; width: 100%; }
+
+        /* Disable browser bilinear smoothing on satellite image overlays */
+        .leaflet-overlay-pane img {
+            image-rendering: pixelated;
+            image-rendering: crisp-edges; /* Firefox fallback */
+        }
+
+        #timestamp {
+            position: absolute;
+            bottom: 58px;
+            left: 10px;
+            z-index: 1000;
+            background: rgba(0,0,0,0.6);
+            color: #fff;
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 12px;
+        }
+
+        #animation-controls {
+            position: absolute;
+            bottom: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 1000;
+            background: rgba(0, 0, 0, 0.72);
+            color: #fff;
+            padding: 6px 14px;
+            border-radius: 6px;
+            font-family: monospace;
+            font-size: 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            white-space: nowrap;
+        }
+        #play-pause-btn {
+            background: none;
+            border: 1px solid #7cf;
+            color: #7cf;
+            border-radius: 4px;
+            padding: 2px 8px;
+            cursor: pointer;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+        #play-pause-btn:hover { background: rgba(119, 204, 255, 0.15); }
+        #frame-slider {
+            width: 180px;
+            cursor: pointer;
+            accent-color: #7cf;
+        }
+        #frame-select-label {
+            min-width: 44px;
+            text-align: right;
+        }
+
+        /* ---- Legend panel ---- */
+        #legend {
+            position: absolute;
+            bottom: 30px;
+            right: 10px;
+            z-index: 1000;
+            background: rgba(0,0,0,0.72);
+            color: #fff;
+            padding: 10px 14px 8px;
+            border-radius: 6px;
+            font-family: sans-serif;
+            font-size: 12px;
+            min-width: 220px;
+            display: none;
+        }
+        #legend .legend-title {
+            font-size: 13px;
+            font-weight: bold;
+            margin-bottom: 7px;
+            letter-spacing: 0.02em;
+        }
+        #legend .legend-subtitle {
+            font-size: 10px;
+            color: #bbb;
+            margin-bottom: 6px;
+        }
+        #legend .legend-bar {
+            height: 14px;
+            border-radius: 3px;
+            margin-bottom: 3px;
+        }
+        #legend .legend-ticks {
+            display: flex;
+            justify-content: space-between;
+            font-size: 10px;
+            color: #ccc;
+            margin-bottom: 4px;
+        }
+        #legend .legend-unit {
+            font-size: 10px;
+            color: #aaa;
+            text-align: right;
+        }
+        /* Caveat text for the experimental precipitation product */
+        #legend .legend-note {
+            font-size: 10px;
+            line-height: 1.35;
+            color: #f5b942;
+            margin-top: 6px;
+            max-width: 240px;
+        }
+
+        /* Swatch rows used by the GeoColor night legend */
+        #legend .swatch-row {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            margin-bottom: 4px;
+            font-size: 11px;
+        }
+        #legend .swatch {
+            width: 14px;
+            height: 14px;
+            border-radius: 3px;
+            flex-shrink: 0;
+        }
+
+        /* ---- Cyclone sectors panel ---- */
+        #cyclone-panel {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            z-index: 1000;
+            background: rgba(0,0,0,0.75);
+            color: #fff;
+            padding: 8px 12px 10px;
+            border-radius: 6px;
+            font-family: monospace;
+            font-size: 12px;
+            min-width: 170px;
+            max-width: 220px;
+        }
+        #cyclone-panel .cp-header {
+            font-size: 11px;
+            color: #aaa;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            margin-bottom: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        #cyclone-panel .cp-header span { color: #7cf; font-weight: bold; }
+        .sector-btn {
+            display: block;
+            width: 100%;
+            background: rgba(255,255,255,0.07);
+            border: 1px solid #555;
+            color: #eee;
+            border-radius: 4px;
+            padding: 5px 8px;
+            margin-bottom: 5px;
+            cursor: pointer;
+            text-align: left;
+            font-family: monospace;
+            font-size: 12px;
+            line-height: 1.4;
+        }
+        .sector-btn:hover { background: rgba(119,204,255,0.15); border-color: #7cf; }
+        .sector-btn.active { background: rgba(119,204,255,0.22); border-color: #7cf; color: #7cf; }
+        .sector-btn .sb-name { font-weight: bold; font-size: 13px; }
+        .sector-btn .sb-info { font-size: 10px; color: #bbb; }
+        .sector-btn.active .sb-info { color: #9de; }
+        #full-disk-btn {
+            display: none;
+            width: 100%;
+            background: rgba(255,180,60,0.12);
+            border: 1px solid #fa8;
+            color: #fa8;
+            border-radius: 4px;
+            padding: 4px 8px;
+            margin-top: 4px;
+            cursor: pointer;
+            font-family: monospace;
+            font-size: 11px;
+        }
+        #full-disk-btn:hover { background: rgba(255,180,60,0.25); }
+        #cp-no-storms { font-size: 11px; color: #777; margin-top: 2px; }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div id="cyclone-panel">
+        <div class="cp-header">Tropical Cyclones <span id="cp-count"></span></div>
+        <div id="cp-storm-list"><span id="cp-no-storms">Loading...</span></div>
+        <button id="full-disk-btn">&#8617; Full Disk</button>
+    </div>
+    <div id="timestamp">Loading...</div>
+    <div id="animation-controls">
+        <button id="play-pause-btn" title="Play / Pause animation">⏸</button>
+        <span style="font-size:11px;color:#888;">Older</span>
+        <input type="range" id="frame-slider" min="0" max="9" value="0">
+        <span style="font-size:11px;color:#888;">LIVE</span>
+        <span id="frame-select-label" style="color:#7cf;">LIVE</span>
+    </div>
+    <div id="legend"></div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        // Initialize Map — centered on Himawari-9 full disk (Asia-Pacific)
+        var map = L.map('map').setView([20, 140], 3);
+
+        // Dark base layer
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a>',
+            subdomains: 'abcd',
+            maxZoom: 19
+        }).addTo(map);
+
+        // Image bounds — MUST match EXTENT in process_data.py: [80, 200, -60, 60]
+        // Leaflet format: [[south, west], [north, east]]
+        var imageBounds = [[-60, 80], [60, 200]];
+        var imageUrl = 'data/';
+
+        // Satellite overlay layers — always show the latest frame (_00)
+        var geocolorLayer   = L.imageOverlay(imageUrl + 'geocolor_00.png',    imageBounds, {opacity: 0.95});
+        var visibleLayer    = L.imageOverlay(imageUrl + 'visible_00.png',     imageBounds, {opacity: 0.85});
+        var infraredLayer   = L.imageOverlay(imageUrl + 'infrared_00.png',    imageBounds, {opacity: 0.85});
+        var waterVaporLayer = L.imageOverlay(imageUrl + 'water_vapor_00.png', imageBounds, {opacity: 0.85});
+        var precipLayer     = L.imageOverlay(imageUrl + 'precip_00.png',      imageBounds, {opacity: 0.90});
+
+        var overlayMaps = {
+            "GeoColor (RGB)":       geocolorLayer,
+            "Visible (Band 3)":     visibleLayer,
+            "Infrared (Band 13)":   infraredLayer,
+            "Water Vapor (Band 9)": waterVaporLayer,
+            "☂ Precip Rate (experimental)": precipLayer
+        };
+
+        L.control.layers({}, overlayMaps, {collapsed: false}).addTo(map);
+
+        // Show GeoColor by default
+        geocolorLayer.addTo(map);
+
+        // ----------------------------------------------------------------
+        // Legend definitions
+        // ----------------------------------------------------------------
+
+        // Discrete rain-rate scale — MUST match PRECIP_LEVELS / PRECIP_COLORS
+        // in process_data.py.
+        var PRECIP_BIN_COLORS = [
+            '#9fe8ff', '#4fc0f0', '#1878d0', '#17a92a', '#4fd12a',
+            '#ffe000', '#ff9000', '#ff3000', '#c00040', '#ff40ff'
+        ];
+
+        // Hard-stop gradient so each rain-rate bin reads as a discrete step
+        // rather than a continuous ramp.
+        function precipGradient() {
+            var stops = [];
+            var w = 100 / PRECIP_BIN_COLORS.length;
+            PRECIP_BIN_COLORS.forEach(function(c, i) {
+                stops.push(c + ' ' + (i * w).toFixed(1) + '%');
+                stops.push(c + ' ' + ((i + 1) * w).toFixed(1) + '%');
+            });
+            return 'linear-gradient(to right,' + stops.join(',') + ')';
+        }
+
+        var LEGENDS = {
+            // Matches estimate_precip_rate() in process_data.py
+            precip: {
+                title: 'Precipitation Rate — experimental',
+                subtitle: 'Inferred from Bands 13 + 9 + 15',
+                gradient: precipGradient(),
+                // Bin edges 0.01 / 0.05 / 0.20 / 0.75 / 2.00 / 4.00 fall at
+                // 0, 20, 40, 60, 80 and 100 % of the bar.
+                ticks: ['0.01', '0.05', '0.20', '0.75', '2.00', '4.00+'],
+                unit: 'in/hr',
+                note: 'Inferred from cloud-top temperature — not a radar ' +
+                      'measurement. Himawari has no lightning mapper, so the ' +
+                      'screens are infrared-only. Misses warm rain from low ' +
+                      'cloud, so it reads as "where is the deep convection", ' +
+                      'not a full rainfall map.'
+            },
+
+            // Matches _ir_colormap() in process_data.py (190 – 310 K)
+            infrared: {
+                title: 'Infrared — Band 13',
+                subtitle: 'Clean IR Longwave (10.35 µm)',
+                gradient: 'linear-gradient(to right,' +
+                    '#ffffff 0%,'   +   // 190 K
+                    '#dd00dd 7%,'   +   // ~199 K
+                    '#ff0000 17%,'  +   // ~210 K
+                    '#ff5500 27%,'  +   // ~222 K
+                    '#ff8800 37%,'  +   // ~233 K  orange
+                    '#44cc00 45%,'  +   // ~244 K  green (no yellow)
+                    '#00cc00 53%,'  +   // ~254 K
+                    '#00cccc 62%,'  +   // ~264 K
+                    '#0066ff 72%,'  +   // ~276 K
+                    '#001177 87%,'  +   // ~294 K
+                    '#060606 100%'  +   // 310 K
+                ')',
+                ticks: ['190 K', '222 K', '254 K', '282 K', '310 K'],
+                unit: 'Brightness Temperature'
+            },
+
+            // Matches _wv_colormap() in process_data.py (195 – 280 K)
+            watervapor: {
+                title: 'Water Vapor — Band 9',
+                subtitle: 'Mid-Level Water Vapor (6.9 µm)',
+                gradient: 'linear-gradient(to right,' +
+                    '#00003c 0%,'   +   // 195 K
+                    '#0000cc 18%,'  +   // ~210 K
+                    '#0066ee 35%,'  +   // ~225 K
+                    '#00bbdd 50%,'  +   // ~238 K
+                    '#00bb66 63%,'  +   // ~249 K
+                    '#22cc00 74%,'  +   // ~258 K  green (no yellow-green)
+                    '#ff8800 84%,'  +   // ~266 K  orange (no yellow)
+                    '#ff5500 92%,'  +   // ~272 K
+                    '#cc1100 100%'  +   // 280 K
+                ')',
+                ticks: ['195 K', '217 K', '238 K', '259 K', '280 K'],
+                unit: 'Brightness Temperature'
+            },
+
+            // Grayscale visible
+            visible: {
+                title: 'Visible — Band 3',
+                subtitle: 'Red Visible (0.64 µm)',
+                gradient: 'linear-gradient(to right, #000000, #ffffff)',
+                ticks: ['0 %', '25 %', '50 %', '75 %', '100 %'],
+                unit: 'Reflectance'
+            },
+
+            // GeoColor: informational swatches (no single numeric scale)
+            geocolor: null
+        };
+
+        function buildLegend(key) {
+            var el = document.getElementById('legend');
+            if (key === 'geocolor' || !LEGENDS[key]) {
+                el.style.display = 'none';
+                return;
+            }
+            var d = LEGENDS[key];
+            var html = '<div class="legend-title">' + d.title + '</div>';
+            if (d.subtitle) html += '<div class="legend-subtitle">' + d.subtitle + '</div>';
+            html += '<div class="legend-bar" style="background:' + d.gradient + '"></div>';
+            html += '<div class="legend-ticks">';
+            d.ticks.forEach(function(t) { html += '<span>' + t + '</span>'; });
+            html += '</div>';
+            if (d.unit) html += '<div class="legend-unit">' + d.unit + '</div>';
+            if (d.note) html += '<div class="legend-note">' + d.note + '</div>';
+            el.innerHTML = html;
+            el.style.display = 'block';
+        }
+
+        // Priority order when multiple layers are active:
+        // Precip > IR > WV > Visible > GeoColor
+        var legendPriority = [
+            { layer: precipLayer,     key: 'precip'     },
+            { layer: infraredLayer,   key: 'infrared'   },
+            { layer: waterVaporLayer, key: 'watervapor' },
+            { layer: visibleLayer,    key: 'visible'    },
+            { layer: geocolorLayer,   key: 'geocolor'   }
+        ];
+
+        function updateLegend() {
+            for (var i = 0; i < legendPriority.length; i++) {
+                if (map.hasLayer(legendPriority[i].layer)) {
+                    buildLegend(legendPriority[i].key);
+                    return;
+                }
+            }
+            document.getElementById('legend').style.display = 'none';
+        }
+
+        // ----------------------------------------------------------------
+        // Frame animation — cycles through the 10-frame rolling buffer
+        // Frame 00 = newest (LIVE), Frame 09 = oldest (~9 h ago)
+        // Plays oldest→newest then loops: 9, 8, 7, …, 1, 0, 9, 8, …
+        // Slider: left = oldest (value 0 → frame 9), right = LIVE (value 9 → frame 0)
+        // ----------------------------------------------------------------
+        var NUM_FRAMES    = 10;
+        var currentFrame  = NUM_FRAMES - 1;   // start at oldest
+        var isPlaying     = true;
+        var animInterval  = null;
+
+        var layerProducts = [
+            { layer: geocolorLayer,   product: 'geocolor'    },
+            { layer: visibleLayer,    product: 'visible'     },
+            { layer: infraredLayer,   product: 'infrared'    },
+            { layer: waterVaporLayer, product: 'water_vapor' },
+            { layer: precipLayer,     product: 'precip'      }
+        ];
+
+        function frameUrl(product, index) {
+            var pad = index < 10 ? '0' + index : '' + index;
+            return 'data/' + product + '_' + pad + '.png';
+        }
+
+        function updateAnimationFrame() {
+            layerProducts.forEach(function(lp) {
+                if (map.hasLayer(lp.layer)) {
+                    lp.layer.setUrl(frameUrl(lp.product, currentFrame));
+                }
+            });
+            // Sync slider position: slider value 0 = oldest, MAX-1 = LIVE
+            document.getElementById('frame-slider').value = NUM_FRAMES - 1 - currentFrame;
+            var lbl = document.getElementById('frame-select-label');
+            if (currentFrame === 0) {
+                lbl.textContent = 'LIVE';
+                lbl.style.color = '#7cf';
+            } else {
+                lbl.textContent = '-' + currentFrame + 'h';
+                lbl.style.color = '#fa8';
+            }
+        }
+
+        function startAnimation() {
+            if (animInterval !== null) return;
+            animInterval = setInterval(function() {
+                // Advance one step older→newer; wrap newest back to oldest
+                currentFrame = (currentFrame - 1 + NUM_FRAMES) % NUM_FRAMES;
+                updateAnimationFrame();
+            }, 1000);
+            isPlaying = true;
+            document.getElementById('play-pause-btn').textContent = '⏸';
+        }
+
+        function stopAnimation() {
+            if (animInterval !== null) {
+                clearInterval(animInterval);
+                animInterval = null;
+            }
+            isPlaying = false;
+            document.getElementById('play-pause-btn').textContent = '▶';
+        }
+
+        document.getElementById('play-pause-btn').addEventListener('click', function() {
+            if (isPlaying) { stopAnimation(); } else { startAnimation(); }
+        });
+
+        // Scrubbing the slider pauses the animation and jumps to the selected frame
+        document.getElementById('frame-slider').addEventListener('input', function() {
+            stopAnimation();
+            currentFrame = NUM_FRAMES - 1 - parseInt(this.value, 10);
+            updateAnimationFrame();
+        });
+
+        startAnimation();   // begin playing on load
+
+        map.on('layeradd layerremove', function(e) {
+            updateLegend();
+            // Ensure newly-added layers immediately show the current animation frame
+            layerProducts.forEach(function(lp) {
+                if (e.layer === lp.layer) {
+                    lp.layer.setUrl(frameUrl(lp.product, currentFrame));
+                }
+            });
+        });
+
+        // Set initial legend for the default GeoColor layer (no legend shown)
+        updateLegend();
+
+        // ----------------------------------------------------------------
+        // Cyclone sectors
+        // ----------------------------------------------------------------
+        var sectorMode        = false;
+        var activeSectorId    = null;
+        var sectorOverlays    = {};   // safe_id → { geocolor, visible, infrared, water_vapor }
+        var sectorBounds      = {};   // safe_id → [[south,west],[north,east]]
+        var fullDiskView      = { center: [20, 140], zoom: 3 };
+
+        // Remember which full-disk layer is active before entering sector mode
+        var activeSectorLayer = null;
+
+        var SECTOR_PRODUCTS = [
+            { key: 'geocolor',    layer: geocolorLayer,   suffix: 'geocolor'    },
+            { key: 'visible',     layer: visibleLayer,    suffix: 'visible'     },
+            { key: 'infrared',    layer: infraredLayer,   suffix: 'infrared'    },
+            { key: 'water_vapor', layer: waterVaporLayer, suffix: 'water_vapor' },
+            { key: 'precip',      layer: precipLayer,     suffix: 'precip'      },
+        ];
+
+        function sectorFrameUrl(safe_id, suffix, index) {
+            var pad = index < 10 ? '0' + index : '' + index;
+            return 'data/' + suffix + '_sector_' + safe_id + '_' + pad + '.png';
+        }
+
+        function enterSector(meta) {
+            var sid = meta.safe_id;
+            if (!sectorOverlays[sid]) {
+                // Create imageOverlay instances for this sector
+                var lbounds = [[meta.bounds[2], meta.bounds[0]],
+                               [meta.bounds[3], meta.bounds[1]]];
+                sectorBounds[sid] = lbounds;
+                var ovs = {};
+                SECTOR_PRODUCTS.forEach(function(sp) {
+                    // Inherit the full-disk layer's opacity so the two views
+                    // of the same product always look the same.
+                    ovs[sp.key] = L.imageOverlay(
+                        sectorFrameUrl(sid, sp.suffix, 0),
+                        lbounds,
+                        { opacity: sp.layer.options.opacity }
+                    );
+                });
+                sectorOverlays[sid] = ovs;
+            }
+
+            // Track which full-disk overlays are currently visible
+            var wasActive = {};
+            SECTOR_PRODUCTS.forEach(function(sp) {
+                wasActive[sp.key] = map.hasLayer(sp.layer);
+                if (wasActive[sp.key]) map.removeLayer(sp.layer);
+            });
+
+            // Show the matching sector overlay(s)
+            SECTOR_PRODUCTS.forEach(function(sp) {
+                if (wasActive[sp.key]) {
+                    sectorOverlays[sid][sp.key].addTo(map);
+                }
+            });
+
+            // Save current map view before zoom
+            if (!sectorMode) {
+                fullDiskView.center = map.getCenter();
+                fullDiskView.zoom   = map.getZoom();
+            }
+
+            sectorMode     = true;
+            activeSectorId = sid;
+
+            map.fitBounds(sectorBounds[sid], { padding: [20, 20] });
+
+            // Sync animation frame immediately
+            updateSectorFrame(currentFrame);
+
+            document.getElementById('full-disk-btn').style.display = 'block';
+            document.querySelectorAll('.sector-btn').forEach(function(b) {
+                b.classList.toggle('active', b.dataset.safeId === sid);
+            });
+        }
+
+        function exitSectorMode() {
+            if (!sectorMode) return;
+            var sid = activeSectorId;
+
+            // Determine which sector layers are visible, mirror back to full-disk
+            SECTOR_PRODUCTS.forEach(function(sp) {
+                if (sectorOverlays[sid] && map.hasLayer(sectorOverlays[sid][sp.key])) {
+                    map.removeLayer(sectorOverlays[sid][sp.key]);
+                    sp.layer.addTo(map);
+                }
+            });
+
+            sectorMode     = false;
+            activeSectorId = null;
+
+            map.setView(fullDiskView.center, fullDiskView.zoom);
+            document.getElementById('full-disk-btn').style.display = 'none';
+            document.querySelectorAll('.sector-btn').forEach(function(b) {
+                b.classList.remove('active');
+            });
+            updateLegend();
+        }
+
+        function updateSectorFrame(frameIndex) {
+            if (!sectorMode || !activeSectorId) return;
+            var sid = activeSectorId;
+            SECTOR_PRODUCTS.forEach(function(sp) {
+                if (sectorOverlays[sid] && map.hasLayer(sectorOverlays[sid][sp.key])) {
+                    sectorOverlays[sid][sp.key].setUrl(
+                        sectorFrameUrl(sid, sp.suffix, frameIndex)
+                    );
+                }
+            });
+        }
+
+        // Patch updateAnimationFrame to also update sector overlays
+        var _origUpdateFrame = updateAnimationFrame;
+        updateAnimationFrame = function() {
+            _origUpdateFrame();
+            if (sectorMode) updateSectorFrame(currentFrame);
+        };
+
+        // Keep sector overlays in sync when layers are toggled via the control
+        var _sectorSwapping = false;
+        map.on('layeradd layerremove', function(e) {
+            if (_sectorSwapping || !sectorMode || !activeSectorId) return;
+            var sid = activeSectorId;
+            SECTOR_PRODUCTS.forEach(function(sp) {
+                if (e.layer !== sp.layer) return;
+                var secOv = sectorOverlays[sid] && sectorOverlays[sid][sp.key];
+                if (!secOv) return;
+                _sectorSwapping = true;
+                if (e.type === 'layeradd') {
+                    // Swap the just-added full-disk layer for the sector version
+                    map.removeLayer(sp.layer);
+                    secOv.addTo(map);
+                    secOv.setUrl(sectorFrameUrl(sid, sp.suffix, currentFrame));
+                } else {
+                    // User removed the full-disk layer — hide the sector version too
+                    if (map.hasLayer(secOv)) map.removeLayer(secOv);
+                }
+                _sectorSwapping = false;
+            });
+        });
+
+        document.getElementById('full-disk-btn').addEventListener('click', exitSectorMode);
+
+        // Load sector metadata and build the panel
+        function loadSectorPanel() {
+            fetch('data/sectors_meta.json?nocache=' + Date.now())
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    var sectors = data.sectors || [];
+                    var list    = document.getElementById('cp-storm-list');
+                    var countEl = document.getElementById('cp-count');
+                    countEl.textContent = sectors.length ? '(' + sectors.length + ')' : '';
+
+                    if (sectors.length === 0) {
+                        list.innerHTML = '<span id="cp-no-storms">No active storms</span>';
+                        return;
+                    }
+
+                    list.innerHTML = '';
+                    sectors.forEach(function(meta) {
+                        var btn = document.createElement('button');
+                        btn.className       = 'sector-btn';
+                        btn.dataset.safeId  = meta.safe_id;
+
+                        var windStr = meta.wind_kt ? meta.wind_kt + ' kt' : '';
+                        var presStr = meta.pressure_mb ? meta.pressure_mb + ' mb' : '';
+                        var detail  = [meta.classification_label, windStr, presStr]
+                                        .filter(Boolean).join(' · ');
+
+                        btn.innerHTML = '<div class="sb-name">' + meta.name + '</div>'
+                                      + '<div class="sb-info">' + detail + '</div>';
+
+                        btn.addEventListener('click', function() {
+                            if (sectorMode && activeSectorId === meta.safe_id) {
+                                exitSectorMode();
+                            } else {
+                                enterSector(meta);
+                            }
+                        });
+                        list.appendChild(btn);
+                    });
+                })
+                .catch(function() {
+                    document.getElementById('cp-storm-list').innerHTML =
+                        '<span id="cp-no-storms">No storm data</span>';
+                });
+        }
+
+        loadSectorPanel();
+
+        // ----------------------------------------------------------------
+        // Timestamp
+        // ----------------------------------------------------------------
+        fetch('data/last_updated.txt?nocache=' + Date.now())
+            .then(r => r.text())
+            .then(t => { document.getElementById('timestamp').textContent = 'Updated: ' + t; })
+            .catch(() => { document.getElementById('timestamp').textContent = 'Timestamp unavailable'; });
+    </script>
+</body>
+</html>

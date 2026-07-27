@@ -1,0 +1,45 @@
+{
+  "generated": "2026-09-06T22:22:39Z",
+  "sectors": [
+    {
+      "id": "EP1226",
+      "safe_id": "EP1226",
+      "name": "Lowell",
+      "basin": "EP",
+      "basin_name": "Eastern North Pacific",
+      "classification": "TY",
+      "classification_label": "Typhoon (Category 3)",
+      "wind_kt": 110,
+      "wind_mph": 127,
+      "pressure_mb": 0,
+      "lat": 14.8,
+      "lon": 196.2,
+      "bounds": [
+        188.2,
+        200,
+        6.800000000000001,
+        22.8
+      ]
+    },
+    {
+      "id": "WP2226",
+      "safe_id": "WP2226",
+      "name": "Krovanh",
+      "basin": "WP",
+      "basin_name": "Western North Pacific",
+      "classification": "TD",
+      "classification_label": "Tropical Depression",
+      "wind_kt": 30,
+      "wind_mph": 35,
+      "pressure_mb": 0,
+      "lat": 25.8,
+      "lon": 131.6,
+      "bounds": [
+        123.6,
+        139.6,
+        17.8,
+        33.8
+      ]
+    }
+  ]
+}
