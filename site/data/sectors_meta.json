@@ -1,0 +1,25 @@
+{
+  "generated": "2026-09-16T14:42:24Z",
+  "sectors": [
+    {
+      "id": "WP2426",
+      "safe_id": "WP2426",
+      "name": "Twentyfour",
+      "basin": "WP",
+      "basin_name": "Western North Pacific",
+      "classification": "TS",
+      "classification_label": "Tropical Storm",
+      "wind_kt": 35,
+      "wind_mph": 40,
+      "pressure_mb": 0,
+      "lat": 16.5,
+      "lon": 149.5,
+      "bounds": [
+        141.5,
+        157.5,
+        8.5,
+        24.5
+      ]
+    }
+  ]
+}
