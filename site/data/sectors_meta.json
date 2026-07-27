@@ -1,0 +1,45 @@
+{
+  "generated": "2026-10-18T02:42:13Z",
+  "sectors": [
+    {
+      "id": "SH0127",
+      "safe_id": "SH0127",
+      "name": "Wati",
+      "basin": "SH",
+      "basin_name": "Southern Hemisphere",
+      "classification": "TY",
+      "classification_label": "Typhoon (Category 1)",
+      "wind_kt": 65,
+      "wind_mph": 75,
+      "pressure_mb": 0,
+      "lat": -14.8,
+      "lon": 196.8,
+      "bounds": [
+        188.8,
+        200,
+        -22.8,
+        -6.800000000000001
+      ]
+    },
+    {
+      "id": "WP2926",
+      "safe_id": "WP2926",
+      "name": "Champi",
+      "basin": "WP",
+      "basin_name": "Western North Pacific",
+      "classification": "ST",
+      "classification_label": "Super Typhoon (Category 5)",
+      "wind_kt": 130,
+      "wind_mph": 150,
+      "pressure_mb": 0,
+      "lat": 13.1,
+      "lon": 143.4,
+      "bounds": [
+        135.4,
+        151.4,
+        5.1,
+        21.1
+      ]
+    }
+  ]
+}
