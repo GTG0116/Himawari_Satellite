@@ -1,5 +1,6 @@
 import boto3
 import gc
+import io
 import shutil
 import json
 import urllib.request
@@ -13,7 +14,8 @@ import os
 from datetime import datetime, timezone, timedelta
 from botocore import UNSIGNED
 from botocore.config import Config
-from scipy.ndimage import zoom
+from PIL import Image
+from scipy.ndimage import uniform_filter, zoom
 from satpy import Scene
 
 OUTPUT_DIR = 'site/data'
@@ -47,10 +49,45 @@ STORMS_JSON_URL = ('https://raw.githubusercontent.com/GTG0116/JTWCTyphoonData/'
 # 8° gives a ~16°×16° box, comfortably containing most wind-radii extents.
 SECTOR_PAD_DEG = 8.0
 
+# A sector clipped by the domain edge is only worth rendering if this many
+# degrees survive in both axes; anything thinner is a sliver of limb.
+MIN_SECTOR_DEG = 2.0
+
 # Sector rendering uses a smaller figure at higher DPI to maximise pixel
 # density over the small geographic area.
 SECTOR_FIG_WIDTH = 8.0   # inches
 SECTOR_DPI       = 200   # → 1 600 px wide for ~16° lon ≈ 100 px/° vs 15 px/° full disk
+
+
+# ---------------------------------------------------------------------------
+# Experimental precipitation-rate estimator configuration
+# ---------------------------------------------------------------------------
+# Look this far back for a previous Band 13 scan to derive a cloud-top cooling
+# rate.  Himawari-9 full-disk cadence is 10 minutes, so 30 minutes ≈ 3 scans —
+# long enough for a measurable temperature trend, short enough that the cloud
+# field hasn't advected far.  Set to 0 to disable the cooling-rate term.
+PRECIP_COOLING_MINUTES = 30
+
+# Rain rates are reported in inches per hour.  The underlying regression is
+# published in mm/hr, so it is converted on the way out.
+MM_PER_INCH = 25.4
+
+# Rain rates below this (in/hr) are treated as no rain and drawn transparent.
+# 0.01 in/hr is the conventional "trace" threshold.
+PRECIP_MIN_RATE = 0.01
+# Hard ceiling (in/hr ≈ 102 mm/hr).  The bare regression curve runs away below
+# ~195 K (hundreds of mm/hr), which is physically implausible; the operational
+# Hydro-Estimator applies a similar cap.
+PRECIP_MAX_RATE = 4.0
+# Cloud-top temperatures warmer than this are assumed non-precipitating.
+PRECIP_CLOUD_MAX_K = 260.0
+# Diameter (km) of the neighbourhood used for the cloud-top texture test.
+PRECIP_TEXTURE_KM = 100.0
+
+# Himawari-9 geostationary geometry, used for the view-angle taper.  These are
+# the values AHI HSD files carry in their projection metadata.
+SAT_HEIGHT   = 35785863.0  # perspective point height, m
+EARTH_RADIUS = 6378137.0   # GRS80 semi-major axis, m
 
 
 # Module-level cache so each band is downloaded and loaded only once per run,
@@ -108,6 +145,305 @@ def _wv_colormap():
 
 
 # ---------------------------------------------------------------------------
+# Precipitation rate scale
+# ---------------------------------------------------------------------------
+# Discrete radar-style rain-rate bins (in/hr).  N+1 edges → N colour bins.
+# Edges 0, 2, 4, 6, 8 and 10 land on the legend ticks in site/index.html.
+PRECIP_LEVELS = [0.01, 0.02, 0.05, 0.10, 0.20, 0.40, 0.75, 1.25, 2.00, 3.00, 4.00]
+
+# One colour per bin, ramping cyan → blue → green → yellow → red → magenta.
+# Unlike the IR/WV enhancements, yellow is kept here: on a rain-rate scale it
+# is a meaningful step between green and orange rather than a colour cast.
+PRECIP_COLORS = [
+    '#9fe8ff',  # 0.01 – 0.02  trace
+    '#4fc0f0',  # 0.02 – 0.05  very light
+    '#1878d0',  # 0.05 – 0.10  light
+    '#17a92a',  # 0.10 – 0.20  light-moderate
+    '#4fd12a',  # 0.20 – 0.40  moderate
+    '#ffe000',  # 0.40 – 0.75  moderate-heavy
+    '#ff9000',  # 0.75 – 1.25  heavy
+    '#ff3000',  # 1.25 – 2.00  very heavy
+    '#c00040',  # 2.00 – 3.00  extreme
+    '#ff40ff',  # 3.00 – 4.00+ exceptional
+]
+
+# Opacity ramp — trace rain stays translucent so the basemap reads through,
+# heavy cores are nearly opaque.
+PRECIP_ALPHAS = np.linspace(0.45, 0.95, len(PRECIP_COLORS))
+
+
+def _hex_to_rgb(h):
+    """'#rrggbb' → (r, g, b) floats in [0, 1]."""
+    h = h.lstrip('#')
+    return tuple(int(h[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
+
+
+# ---------------------------------------------------------------------------
+# Experimental IR → precipitation rate estimator
+# ---------------------------------------------------------------------------
+# The core curve is the GOES Auto-Estimator power-law regression of Vicente,
+# Scofield & Menzel (1998), which fitted 10.7 µm cloud-top brightness
+# temperature against radar-derived rain rates:
+#
+#     R = 1.1183e11 · exp(-3.6382e-2 · T^1.2)      [mm/hr, T in K]
+#
+# AHI Band 13 (10.4 µm) is the Himawari equivalent of the GOES-8 10.7 µm
+# channel the regression was built on.
+AE_A = 1.1183e11
+AE_B = 3.6382e-2
+AE_P = 1.2
+
+
+def _auto_estimator_rate(bt):
+    """Bare Vicente et al. (1998) Auto-Estimator curve, mm/hr."""
+    # Clamp the input so the exponential can't overflow on bad/fill pixels.
+    bt = np.clip(bt, 180.0, 330.0)
+    return AE_A * np.exp(-AE_B * np.power(bt, AE_P))
+
+
+def _texture_factor(bt13, km_per_px):
+    """Convective-core vs. cirrus-anvil weighting from cloud-top texture.
+
+    The raw regression assigns rain to any cold pixel, so a wide cirrus anvil
+    blooms into a huge false rain shield.  The Hydro-Estimator's fix — adopted
+    here — compares each pixel to the mean temperature of the cloudy pixels
+    around it.  Actively growing convective cores are locally *colder* than
+    their surroundings; anvil that has spread downwind is locally *warmer*.
+
+    The multiplier only ever suppresses (max 1.0): a colder-than-average pixel
+    is already assigned more rain by the temperature curve itself, so boosting
+    it again for being cold relative to its neighbours would double-count the
+    same signal.  Returns ~0.1 for warm-relative anvil rising to 1.0 at and
+    below the local cloud mean.
+    """
+    size = int(round(PRECIP_TEXTURE_KM / max(km_per_px, 0.5)))
+    size = max(3, size | 1)  # odd window, at least 3 px
+
+    cloud = (bt13 < PRECIP_CLOUD_MAX_K).astype(np.float32)
+    # Mean over cloudy pixels only — clear-sky warmth must not dilute the mean.
+    bt_sum = uniform_filter(np.where(cloud > 0, bt13, 0.0).astype(np.float32), size=size)
+    bt_cnt = uniform_filter(cloud, size=size)
+    local_mean = np.where(bt_cnt > 1e-6, bt_sum / np.maximum(bt_cnt, 1e-6), bt13)
+
+    # Positive anomaly = colder than surroundings = likely active core
+    anomaly = local_mean - bt13
+    return np.interp(anomaly, [-6.0, -2.0, 0.0],
+                              [0.10, 0.55, 1.00]).astype(np.float32)
+
+
+def _wv_factor(bt13, bt_wv):
+    """Deep-convection screen from the water-vapour minus IR difference.
+
+    When a cloud top reaches the upper troposphere both Band 9 and Band 13 see
+    the same surface, so the difference approaches zero (and goes slightly
+    positive for overshooting tops that punch into the stratospheric
+    inversion).  Either side of that narrow window means no deep convection:
+
+      • Strongly negative — Band 9 still senses cold upper-tropospheric
+        moisture well above a mid-level or thin cloud, so it reads far colder
+        than the window channel.  Cold-but-dry cirrus lands here.
+      • Strongly positive — the window channel is seeing something colder than
+        the mid-troposphere itself, which no cloud top does.  That is a cold
+        *surface*: sea ice or high terrain.  Without this branch the Antarctic
+        margin inside this domain scores as continent-sized convection.
+    """
+    diff = bt_wv - bt13
+    return np.interp(diff, [-35.0, -20.0, -8.0, 0.0, 5.0, 18.0],
+                           [0.05, 0.25, 0.85, 1.00, 1.00, 0.00]).astype(np.float32)
+
+
+def _split_window_factor(bt13, bt15):
+    """Thin-cirrus screen from the split-window difference (Band 13 − Band 15).
+
+    The 12.4 µm window channel is more strongly absorbing than the 10.4 µm
+    one, so a semi-transparent cloud — which lets both channels see some of
+    the warm surface below — produces a clearly positive difference.  An
+    optically thick raining cloud is a near-blackbody in both channels, so the
+    difference collapses towards zero.
+
+    This is the classic discriminator for exactly the population the estimator
+    is most prone to over-reading: cold, high, thin cirrus blown downwind of a
+    storm that looks identical to the raining core in a single IR channel.
+    """
+    btd = bt13 - bt15
+    return np.interp(btd, [1.5, 3.0, 6.5],
+                          [1.00, 0.70, 0.10]).astype(np.float32)
+
+
+def _view_angle_factor(x, y):
+    """Taper the estimate to zero towards the limb of the disk.
+
+    Near the edge of the full disk each pixel is smeared over a huge, highly
+    oblique footprint and the line of sight passes through so much atmosphere
+    that cloud-top temperatures are badly biased.  Beyond roughly 65° of
+    satellite zenith angle the retrieval is not usable, which is also where
+    the radial sampling artefacts appear.
+
+    x, y are projection coordinates in metres (scan angle × satellite height).
+    """
+    # Angular distance from nadir along the scan, in radians.  Broadcast the
+    # 1-D axes rather than meshgrid — on a 2750² grid that saves allocating
+    # two full float64 copies.
+    xs = np.asarray(x, dtype=np.float32)[None, :] / SAT_HEIGHT
+    ys = np.asarray(y, dtype=np.float32)[:, None] / SAT_HEIGHT
+    scan = np.sqrt(xs * xs + ys * ys)
+
+    # Law of sines on the satellite–Earth-centre–pixel triangle:
+    #   sin(scan) = (R_e / (R_e + h)) · sin(zenith)
+    ratio = (EARTH_RADIUS + SAT_HEIGHT) / EARTH_RADIUS
+    s = np.clip(np.sin(scan) * ratio, -1.0, 1.0)  # >1 would be off-earth
+    zenith = np.degrees(np.arcsin(s))
+
+    return np.interp(zenith, [65.0, 75.0], [1.0, 0.0]).astype(np.float32)
+
+
+def _cooling_factor(bt13, bt13_prev, minutes):
+    """Growth-rate weighting from the cloud-top temperature trend.
+
+    A cooling top is a rising, still-building updraught and rains hardest; a
+    warming top is a collapsing or spreading anvil where rainfall is already
+    tapering off.  A single IR image cannot tell those two apart even though
+    they look identical in temperature — comparing two scans can, and it is
+    the largest single skill gain available from infrared alone.
+
+    Weighted towards growth rather than symmetric about zero: sustained deep
+    convection cools its top continuously while it builds, so a top that has
+    stopped cooling is usually already past its peak.
+    """
+    if bt13_prev is None or minutes <= 0 or bt13_prev.shape != bt13.shape:
+        return 1.0
+
+    # Normalise the trend to K per 15 minutes so the thresholds below are
+    # independent of the actual gap between the two scans.
+    trend = (bt13 - bt13_prev) * (15.0 / minutes)
+    return np.interp(trend, [-8.0, -2.0, 0.0, 2.0, 6.0],
+                            [1.20, 1.05, 0.85, 0.50, 0.20]).astype(np.float32)
+
+
+def estimate_precip_rate(bt13, bt_wv=None, bt13_prev=None,
+                         prev_minutes=0, km_per_px=2.0, x=None, y=None,
+                         bt_split=None):
+    """Estimate surface rain rate (in/hr) from AHI infrared brightness temps.
+
+    EXPERIMENTAL.  Infrared sees cloud *tops*, not raindrops, so this is an
+    inference chain rather than a measurement.  Known limitations:
+
+      • Warm rain from shallow maritime clouds is invisible — those tops are
+        warmer than PRECIP_CLOUD_MAX_K and are scored as zero.  That matters
+        more in this domain than over the continental US, because the warm
+        pool west of the date line produces a great deal of it.
+      • The result is therefore biased towards the convective part of the rain
+        field.  Light stratiform rain falling from tops in the 240–260 K range
+        is scored below the display threshold and simply disappears, so the
+        rain area is too small and the surviving area skews heavy.  Read this
+        as "where is the deep convection and roughly how hard is it", not as a
+        complete rainfall map.
+      • Cold cirrus that is not raining can still be scored as rain when the
+        texture and water-vapour screens fail to catch it.
+      • Himawari-9 carries no lightning mapper, so unlike the GOES version of
+        this product there is no independent confirmation of a vigorous
+        ice-phase updraught; the screens here are infrared-only.
+      • No parallax correction, so cold tops are displaced from the rain
+        beneath them by tens of km at high latitudes and near the limb.
+      • Nothing is estimated beyond ~75° satellite zenith angle, so the outer
+        ring of the disk is intentionally blank.
+      • The Auto-Estimator regression was fitted over the continental US in
+        summer; it over-predicts in dry environments and under-predicts in
+        moist tropical ones.  The operational Hydro-Estimator corrects this
+        with model precipitable water and RH, which are not used here.
+
+    bt13        – Band 13 (10.4 µm) brightness temperature, K
+    bt_wv       – optional Band 9 (6.9 µm) brightness temperature, K
+    bt13_prev   – optional earlier Band 13 scan on the same grid, K
+    prev_minutes– minutes between bt13_prev and bt13
+    km_per_px   – ground sampling distance, used to size the texture window
+    x, y        – optional projection coordinates (m) enabling the limb taper
+    bt_split    – optional Band 15 (12.4 µm) brightness temperature, K
+    """
+    bt13 = np.asarray(bt13, dtype=np.float32)
+    # Off-earth / fill pixels become "warm" so they score as no rain.
+    valid = np.isfinite(bt13)
+    bt13_f = np.where(valid, bt13, 330.0)
+
+    def _match(arr, fill=330.0):
+        """Coerce a companion band onto the Band 13 grid."""
+        a = np.asarray(arr, dtype=np.float32)
+        a = np.where(np.isfinite(a), a, fill)
+        if a.shape != bt13_f.shape:
+            a = zoom(a, (bt13_f.shape[0] / a.shape[0],
+                         bt13_f.shape[1] / a.shape[1]), order=1)
+        return a
+
+    screen = _texture_factor(bt13_f, km_per_px)
+
+    if bt_wv is not None:
+        screen = screen * _wv_factor(bt13_f, _match(bt_wv))
+
+    if bt_split is not None:
+        screen = screen * _split_window_factor(bt13_f, _match(bt_split))
+
+    if bt13_prev is not None:
+        screen = screen * _cooling_factor(bt13_f, _match(bt13_prev), prev_minutes)
+
+    rate = _auto_estimator_rate(bt13_f) * screen
+
+    # Applied last: this is a data-quality mask rather than a convection
+    # screen, so it is not something the other terms are allowed to override.
+    if x is not None and y is not None:
+        rate = rate * _view_angle_factor(x, y)
+
+    # Nothing warmer than the cloud threshold precipitates in this scheme.
+    rate = np.where(bt13_f > PRECIP_CLOUD_MAX_K, 0.0, rate)
+    rate = np.where(valid, rate, 0.0)
+
+    # The regression is published in mm/hr; the product reports inches.
+    rate = rate / MM_PER_INCH
+
+    rate = np.clip(np.nan_to_num(rate, nan=0.0, posinf=PRECIP_MAX_RATE),
+                   0.0, PRECIP_MAX_RATE)
+    rate = np.where(rate < PRECIP_MIN_RATE, 0.0, rate)
+    return rate.astype(np.float32)
+
+
+def _precip_rgba(rate):
+    """Map a rain-rate field to an RGBA image using the discrete scale."""
+    colors = np.array([_hex_to_rgb(c) for c in PRECIP_COLORS], dtype=np.float32)
+    alphas = PRECIP_ALPHAS.astype(np.float32)
+
+    # digitize returns 0 below the first edge, so subtract 1 to index bins.
+    idx = np.digitize(rate, PRECIP_LEVELS) - 1
+    has_rain = idx >= 0
+    idx = np.clip(idx, 0, len(PRECIP_COLORS) - 1)
+
+    rgb = colors[idx]
+    a   = np.where(has_rain, alphas[idx], 0.0)
+    return np.dstack([rgb, a[..., None]]).astype(np.float32)
+
+
+def _precip_stats(rate):
+    """One-line coverage summary, useful for spotting a broken run in the log."""
+    raining = rate >= PRECIP_MIN_RATE
+    n = int(raining.sum())
+    if n == 0:
+        return "no precipitating pixels"
+    return (f"{100.0 * n / rate.size:.2f}% of pixels raining, "
+            f"max {float(rate.max()):.2f} in/hr, "
+            f"mean-where-raining {float(rate[raining].mean()):.3f} in/hr")
+
+
+def _km_per_pixel(x):
+    """Ground sampling distance in km from the projection x coordinates.
+
+    x is scan angle × satellite height, so the spacing equals the nadir ground
+    resolution of the (possibly downsampled) grid actually being rendered.
+    Pixels grow towards the limb; this is the nadir value.
+    """
+    if x is None or len(x) < 2:
+        return 2.0
+    return abs(float(x[1] - x[0])) / 1000.0
+
+
+# ---------------------------------------------------------------------------
 # Frame management
 # ---------------------------------------------------------------------------
 
@@ -152,6 +488,47 @@ def shift_frames(product_base):
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _save_png(output_path, dpi=150):
+    """Save the current figure as a size-optimised transparent PNG, then close it.
+
+    Every frame is committed straight into the repository on a 10-minute
+    cycle, so bytes written here become repository growth.  Writing an 8-bit
+    palette PNG instead of full RGBA cuts each frame to roughly a quarter of
+    its size.
+
+    The colour-mapped products (IR, Water Vapor, Visible, Precip) draw from a
+    256-entry colormap, so they contain few enough distinct colours to be
+    re-indexed *exactly* — those frames are bit-for-bit identical to the RGBA
+    render, just stored more compactly.  GeoColor is a true-colour composite
+    with tens of thousands of colours and falls back to a 256-colour adaptive
+    palette, which is visually indistinguishable at this resolution.
+    """
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=dpi, transparent=True)
+    plt.close()
+    buf.seek(0)
+
+    img = Image.open(buf).convert('RGBA')
+    arr = np.ascontiguousarray(np.array(img, dtype=np.uint8))
+    h, w = arr.shape[:2]
+
+    # Pack RGBA into one uint32 per pixel so the unique/index pass is a cheap
+    # 1-D sort rather than a lexsort over millions of 4-element rows.
+    packed = arr.reshape(-1, 4).view(np.uint32).reshape(-1)
+    uniq, idx = np.unique(packed, return_inverse=True)
+
+    if len(uniq) <= 256:
+        rgba = uniq.view(np.uint8).reshape(-1, 4)
+        out = Image.fromarray(idx.astype(np.uint8).reshape(h, w), mode='P')
+        palette = rgba[:, :3].reshape(-1).tolist()
+        out.putpalette(palette + [0] * (768 - len(palette)))
+        out.save(output_path, format='PNG', optimize=True,
+                 transparency=bytes(rgba[:, 3].tolist()))
+    else:
+        img.quantize(colors=256, method=Image.FASTOCTREE).save(
+            output_path, format='PNG', optimize=True)
+
+
 def get_latest_scan_time(s3_client):
     """Find the most recent available Himawari-9 scan (every 10 minutes).
 
@@ -185,6 +562,42 @@ def get_latest_scan_time(s3_client):
         except Exception as e:
             print(f'  Warning scanning {b03_prefix}: {e}')
     return None
+
+
+def get_previous_scan_time(s3_client, scan_time, minutes=PRECIP_COOLING_MINUTES):
+    """Find a Band 13 scan roughly *minutes* before *scan_time*.
+
+    Searches backwards from the target time in 10-minute steps (the AHI
+    full-disk cadence) for up to an hour beyond it, so a missing scan degrades
+    into a slightly longer baseline rather than losing the term entirely.
+
+    Returns ((year, month, day, hhmm), gap_minutes) or (None, 0).
+    """
+    if minutes <= 0:
+        return None, 0
+
+    year, month, day, hhmm = scan_time
+    current = datetime(int(year), int(month), int(day),
+                       int(hhmm[:2]), int(hhmm[2:]), tzinfo=timezone.utc)
+
+    for extra in range(0, 61, 10):
+        t = current - timedelta(minutes=minutes + extra)
+        y, mo, d, hm = (t.strftime('%Y'), t.strftime('%m'),
+                        t.strftime('%d'), t.strftime('%H%M'))
+        prefix = (f'AHI-L1b-FLDK/{y}/{mo}/{d}/{hm}/'
+                  f'HS_H09_{y}{mo}{d}_{hm}_B13_')
+        try:
+            resp = s3_client.list_objects_v2(Bucket=BUCKET, Prefix=prefix, MaxKeys=1)
+        except Exception as e:
+            print(f'  Warning scanning {prefix}: {e}')
+            continue
+        if resp.get('Contents'):
+            gap = (current - t).total_seconds() / 60.0
+            print(f'  Lookback scan: {y}/{mo}/{d} {hm} UTC ({gap:.0f} min before current)')
+            return (y, mo, d, hm), gap
+
+    print('  Note: no earlier Band 13 scan found; skipping cooling-rate term.')
+    return None, 0
 
 
 def _make_figure():
@@ -231,6 +644,9 @@ def _make_figure_sector(extent):
     Same approach as _make_figure() but uses the supplied extent and a
     higher DPI / different figure size tuned for sector crops.
     """
+    if extent[1] <= extent[0] or extent[3] <= extent[2]:
+        raise ValueError(f'degenerate sector extent {extent}')
+
     R = 6_378_137.0
     lat_min_rad = np.radians(extent[2])
     lat_max_rad = np.radians(extent[3])
@@ -275,12 +691,47 @@ def fetch_active_storms():
         return []
 
 
+def _normalise_lon(lon):
+    """Map a signed longitude onto the 0–360 convention EXTENT is written in.
+
+    The JTWC feed reports longitude in [-180, 180], but the Himawari domain
+    spans 80 °E to 200 °E (= 160 °W), so a storm east of the antimeridian
+    arrives as a negative number that sorts *below* the domain's west edge.
+    Adding 360 puts it back on the correct side of the disk.
+    """
+    if lon is None:
+        return None
+    lon = float(lon)
+    if not np.isfinite(lon):
+        return None
+    while lon < EXTENT[0]:
+        lon += 360.0
+    while lon > EXTENT[0] + 360.0:
+        lon -= 360.0
+    return lon
+
+
 def _sector_bounds(lat, lon):
-    """Return [west, east, south, north] for a cyclone sector centred on lat/lon."""
+    """Return [west, east, south, north] for a cyclone sector centred on lat/lon.
+
+    Returns None when the storm does not fall inside the Himawari domain, or
+    when clipping to EXTENT leaves a degenerate (zero- or negative-width) box.
+    An East-Pacific storm at, say, 213 °E is outside this satellite's view
+    entirely; previously it produced east < west, which propagated into a
+    negative figure height and aborted the whole run.
+    """
+    if not (np.isfinite(lat) and np.isfinite(lon)):
+        return None
+
     west  = max(lon - SECTOR_PAD_DEG, EXTENT[0])
     east  = min(lon + SECTOR_PAD_DEG, EXTENT[1])
     south = max(lat - SECTOR_PAD_DEG, EXTENT[2])
     north = min(lat + SECTOR_PAD_DEG, EXTENT[3])
+
+    # Require a usable sliver of sector, not just a non-empty intersection:
+    # a storm one degree inside the limb yields a box too thin to render.
+    if east - west < MIN_SECTOR_DEG or north - south < MIN_SECTOR_DEG:
+        return None
     return [west, east, south, north]
 
 
@@ -299,8 +750,7 @@ def _render_sector_band(arr, x, y, sat_proj, extent, product_base, colormap,
               vmin=vmin, vmax=vmax, interpolation='none')
     shift_frames(product_base)
     out = os.path.join(OUTPUT_DIR, f'{product_base}_00.png')
-    plt.savefig(out, dpi=SECTOR_DPI, transparent=True)
-    plt.close()
+    _save_png(out, dpi=SECTOR_DPI)
     print(f"    Saved sector: {out}")
 
 
@@ -351,8 +801,8 @@ def _crop_band_to_sector(arr, x, y, sat_proj, bounds):
 def process_cyclone_sectors(s3_client, scan_time, storms):
     """Generate high-resolution sector images for each active cyclone.
 
-    For every storm, four sector PNGs are produced (geocolor, visible,
-    infrared, water_vapor) using the full-native-resolution band data
+    For every storm, five sector PNGs are produced (geocolor, visible,
+    infrared, water_vapor, precip) using the full-native-resolution band data
     cropped to a ~16°×16° box centred on the storm.  A sectors_meta.json
     file is written to OUTPUT_DIR listing each sector's metadata and
     geographic bounds so the frontend can display the correct overlays.
@@ -372,6 +822,11 @@ def process_cyclone_sectors(s3_client, scan_time, storms):
     b9,  x9,  y9,  _         = _download_band(s3_client, 9,  scan_time)
     b13, x13, y13, _         = _download_band(s3_client, 13, scan_time)
 
+    # Precipitation inputs.  Every band involved is already in _band_cache from
+    # the full-disk pass, so this resolves without new downloads; only the
+    # lookback-scan lookup costs an S3 listing.
+    precip_inputs = _precip_inputs(s3_client, scan_time)
+
     sectors_meta = []
 
     for storm in storms:
@@ -379,101 +834,119 @@ def process_cyclone_sectors(s3_client, scan_time, storms):
         name  = storm.get('name', 'Unknown')
         cur   = storm.get('current', {})
         clat  = cur.get('lat')
-        clon  = cur.get('lon')
+        clon  = _normalise_lon(cur.get('lon'))
 
         if clat is None or clon is None:
             print(f"  Skipping sector for {sid}: no position data.")
             continue
 
         bounds = _sector_bounds(clat, clon)
-        print(f"\n--- Cyclone Sector: {name} ({sid})  [{clat}°N, {clon}°E] ---")
-        print(f"    Sector bounds: W{bounds[0]} E{bounds[1]} S{bounds[2]} N{bounds[3]}")
+        if bounds is None:
+            # Typically an Atlantic or East-Pacific storm carried by the same
+            # feed — outside Himawari's disk, so there is nothing to render.
+            print(f"  Skipping sector for {name} ({sid}): "
+                  f"{clat}°N, {clon}°E is outside the Himawari domain "
+                  f"{EXTENT[0]}–{EXTENT[1]}°E, {EXTENT[2]}–{EXTENT[3]}°N.")
+            continue
 
-        safe_id = sid.replace('/', '_')
+        try:
+            print(f"\n--- Cyclone Sector: {name} ({sid})  [{clat}°N, {clon}°E] ---")
+            print(f"    Sector bounds: W{bounds[0]} E{bounds[1]} S{bounds[2]} N{bounds[3]}")
 
-        # Crop every band to the sector extent before rendering.
-        # A 16° sector is ~13 % of the full disk per axis, so the cropped
-        # arrays are ~365×365 instead of 2 750×2 750 — ~56× fewer elements.
-        # This keeps Cartopy's reprojection buffers small and prevents OOM.
-        b1s,  x1s,  y1s  = _crop_band_to_sector(b1,  x1,  y1,  goes_proj, bounds) if b1  is not None else (None, None, None)
-        b3s,  x3s,  y3s  = _crop_band_to_sector(b3,  x3,  y3,  goes_proj, bounds) if b3  is not None else (None, None, None)
-        b9s,  x9s,  y9s  = _crop_band_to_sector(b9,  x9,  y9,  goes_proj, bounds) if b9  is not None else (None, None, None)
-        b13s, x13s, y13s = _crop_band_to_sector(b13, x13, y13, goes_proj, bounds) if b13 is not None else (None, None, None)
+            safe_id = sid.replace('/', '_')
 
-        if b1s is not None:
-            print(f"    Cropped Band 1:  {b1.shape} → {b1s.shape}")
-        if b3s is not None:
-            print(f"    Cropped Band 3:  {b3.shape} → {b3s.shape}")
-        if b13s is not None:
-            print(f"    Cropped Band 13: {b13.shape} → {b13s.shape}")
+            # Crop every band to the sector extent before rendering.
+            # A 16° sector is ~13 % of the full disk per axis, so the cropped
+            # arrays are ~365×365 instead of 2 750×2 750 — ~56× fewer elements.
+            # This keeps Cartopy's reprojection buffers small and prevents OOM.
+            b1s,  x1s,  y1s  = _crop_band_to_sector(b1,  x1,  y1,  goes_proj, bounds) if b1  is not None else (None, None, None)
+            b3s,  x3s,  y3s  = _crop_band_to_sector(b3,  x3,  y3,  goes_proj, bounds) if b3  is not None else (None, None, None)
+            b9s,  x9s,  y9s  = _crop_band_to_sector(b9,  x9,  y9,  goes_proj, bounds) if b9  is not None else (None, None, None)
+            b13s, x13s, y13s = _crop_band_to_sector(b13, x13, y13, goes_proj, bounds) if b13 is not None else (None, None, None)
 
-        # ---- GeoColor sector ----
-        if b1s is not None and b3s is not None:
-            b1_f = np.nan_to_num(b1s, nan=0.0)
-            b3_f = np.nan_to_num(b3s, nan=0.0)
-            # If the two cropped bands have different shapes, resize to match
-            if b3_f.shape != b1_f.shape:
-                b3_f = zoom(b3_f, (b1_f.shape[0]/b3_f.shape[0],
-                                   b1_f.shape[1]/b3_f.shape[1]), order=1)
-            mean_ref = float(np.nanmean(b3_f))
-            if mean_ref > 0.05:  # daytime
-                R = np.power(np.clip(b3_f, 0, 1), 0.6)
-                G = np.power(np.clip(0.5*b3_f + 0.5*b1_f, 0, 1), 0.6)
-                B = np.power(np.clip(b1_f, 0, 1), 0.6)
-                if b13s is not None:
-                    bt13_f = np.where(np.isnan(b13s), 320.0, b13s)
-                    if bt13_f.shape != R.shape:
-                        bt13_f = zoom(bt13_f, (R.shape[0]/bt13_f.shape[0],
-                                               R.shape[1]/bt13_f.shape[1]), order=1)
-                    ce = np.clip((235.0 - bt13_f) / 45.0, 0.0, 1.0) * 0.5
-                    R = np.clip(R + ce*(1-R), 0, 1)
-                    G = np.clip(G + ce*(1-G), 0, 1)
-                    B = np.clip(B + ce*(1-B), 0, 1)
-                rgb = np.dstack([R, G, B])
-                fig, ax = _make_figure_sector(bounds)
-                img_ext = (x1s[0], x1s[-1], y1s[-1], y1s[0])
-                ax.imshow(rgb, origin='upper', extent=img_ext,
-                          transform=goes_proj, interpolation='none')
-            else:  # nighttime — IR cloud composite
-                if b13s is not None:
-                    bt13_n = np.where(np.isnan(b13s), 320.0, b13s)
-                    co = np.clip((275.0 - bt13_n) / 55.0, 0.0, 1.0)
-                    R2 = co * 0.80; G2 = co * 0.88; B2 = co * 1.00
-                    A2 = np.clip(co * 1.5, 0.0, 1.0)
-                    rgba = np.dstack([R2, G2, B2, A2]).astype(np.float32)
+            if b1s is not None:
+                print(f"    Cropped Band 1:  {b1.shape} → {b1s.shape}")
+            if b3s is not None:
+                print(f"    Cropped Band 3:  {b3.shape} → {b3s.shape}")
+            if b13s is not None:
+                print(f"    Cropped Band 13: {b13.shape} → {b13s.shape}")
+
+            # ---- GeoColor sector ----
+            if b1s is not None and b3s is not None:
+                b1_f = np.nan_to_num(b1s, nan=0.0)
+                b3_f = np.nan_to_num(b3s, nan=0.0)
+                # If the two cropped bands have different shapes, resize to match
+                if b3_f.shape != b1_f.shape:
+                    b3_f = zoom(b3_f, (b1_f.shape[0]/b3_f.shape[0],
+                                       b1_f.shape[1]/b3_f.shape[1]), order=1)
+                mean_ref = float(np.nanmean(b3_f))
+                if mean_ref > 0.05:  # daytime
+                    R = np.power(np.clip(b3_f, 0, 1), 0.6)
+                    G = np.power(np.clip(0.5*b3_f + 0.5*b1_f, 0, 1), 0.6)
+                    B = np.power(np.clip(b1_f, 0, 1), 0.6)
+                    if b13s is not None:
+                        bt13_f = np.where(np.isnan(b13s), 320.0, b13s)
+                        if bt13_f.shape != R.shape:
+                            bt13_f = zoom(bt13_f, (R.shape[0]/bt13_f.shape[0],
+                                                   R.shape[1]/bt13_f.shape[1]), order=1)
+                        ce = np.clip((235.0 - bt13_f) / 45.0, 0.0, 1.0) * 0.5
+                        R = np.clip(R + ce*(1-R), 0, 1)
+                        G = np.clip(G + ce*(1-G), 0, 1)
+                        B = np.clip(B + ce*(1-B), 0, 1)
+                    rgb = np.dstack([R, G, B])
                     fig, ax = _make_figure_sector(bounds)
-                    img_ext = (x13s[0], x13s[-1], y13s[-1], y13s[0])
-                    ax.imshow(rgba, origin='upper', extent=img_ext,
+                    img_ext = (x1s[0], x1s[-1], y1s[-1], y1s[0])
+                    ax.imshow(rgb, origin='upper', extent=img_ext,
                               transform=goes_proj, interpolation='none')
-                else:
-                    fig, ax = _make_figure_sector(bounds)
+                else:  # nighttime — IR cloud composite
+                    if b13s is not None:
+                        bt13_n = np.where(np.isnan(b13s), 320.0, b13s)
+                        co = np.clip((275.0 - bt13_n) / 55.0, 0.0, 1.0)
+                        R2 = co * 0.80; G2 = co * 0.88; B2 = co * 1.00
+                        A2 = np.clip(co * 1.5, 0.0, 1.0)
+                        rgba = np.dstack([R2, G2, B2, A2]).astype(np.float32)
+                        fig, ax = _make_figure_sector(bounds)
+                        img_ext = (x13s[0], x13s[-1], y13s[-1], y13s[0])
+                        ax.imshow(rgba, origin='upper', extent=img_ext,
+                                  transform=goes_proj, interpolation='none')
+                    else:
+                        fig, ax = _make_figure_sector(bounds)
 
-            pb = f'geocolor_sector_{safe_id}'
-            shift_frames(pb)
-            plt.savefig(os.path.join(OUTPUT_DIR, f'{pb}_00.png'),
-                        dpi=SECTOR_DPI, transparent=True)
-            plt.close()
-            print(f"    Saved sector GeoColor.")
+                pb = f'geocolor_sector_{safe_id}'
+                shift_frames(pb)
+                _save_png(os.path.join(OUTPUT_DIR, f'{pb}_00.png'), dpi=SECTOR_DPI)
+                print(f"    Saved sector GeoColor.")
 
-        # ---- Visible sector ----
-        if b3s is not None:
-            b3_vis = np.nan_to_num(b3s, nan=0.0)
-            _render_sector_band(b3_vis, x3s, y3s, goes_proj, bounds,
-                                f'visible_sector_{safe_id}', 'gray', 0.0, 1.0, gamma=0.6)
+            # ---- Visible sector ----
+            if b3s is not None:
+                b3_vis = np.nan_to_num(b3s, nan=0.0)
+                _render_sector_band(b3_vis, x3s, y3s, goes_proj, bounds,
+                                    f'visible_sector_{safe_id}', 'gray', 0.0, 1.0, gamma=0.6)
 
-        # ---- Infrared sector ----
-        if b13s is not None:
-            _render_sector_band(b13s, x13s, y13s, goes_proj, bounds,
-                                f'infrared_sector_{safe_id}', _ir_colormap(), 190, 310)
+            # ---- Infrared sector ----
+            if b13s is not None:
+                _render_sector_band(b13s, x13s, y13s, goes_proj, bounds,
+                                    f'infrared_sector_{safe_id}', _ir_colormap(), 190, 310)
 
-        # ---- Water vapor sector ----
-        if b9s is not None:
-            _render_sector_band(b9s, x9s, y9s, goes_proj, bounds,
-                                f'water_vapor_sector_{safe_id}', _wv_colormap(), 195, 280)
+            # ---- Water vapor sector ----
+            if b9s is not None:
+                _render_sector_band(b9s, x9s, y9s, goes_proj, bounds,
+                                    f'water_vapor_sector_{safe_id}', _wv_colormap(), 195, 280)
 
-        # Free cropped arrays and force GC before next storm
-        del b1s, b3s, b9s, b13s
-        gc.collect()
+            # ---- Precipitation rate sector ----
+            _render_sector_precip(precip_inputs, bounds, f'precip_sector_{safe_id}')
+
+            # Free cropped arrays and force GC before next storm
+            del b1s, b3s, b9s, b13s
+            gc.collect()
+        except Exception as e:
+            # One unrenderable storm must not cost the other sectors, nor
+            # the full-disk products that have already been written.
+            print(f"  WARNING: sector rendering failed for {name} ({sid}): {e}")
+            import traceback
+            traceback.print_exc()
+            plt.close('all')  # drop any half-built figure before the next storm
+            continue
 
         sectors_meta.append({
             'id':                   sid,
@@ -721,8 +1194,7 @@ def process_goes_band(s3_client, band, scan_time, output_filename, colormap,
     product_base = output_filename.replace('.png', '')
     shift_frames(product_base)
     output_path = os.path.join(OUTPUT_DIR, f'{product_base}_00.png')
-    plt.savefig(output_path, dpi=150, transparent=True)
-    plt.close()
+    _save_png(output_path)
     print(f"  Saved: {output_path}")
 
 
@@ -836,8 +1308,7 @@ def _render_geocolor_day(b1, b2, x, y, goes_proj, bt13=None, scan_time=None):
 
     shift_frames('geocolor')
     output_path = os.path.join(OUTPUT_DIR, 'geocolor_00.png')
-    plt.savefig(output_path, dpi=150, transparent=True)
-    plt.close()
+    _save_png(output_path)
     print(f"  Saved (daytime): {output_path}")
 
 
@@ -922,14 +1393,123 @@ def _render_geocolor_night(s3_client, scan_time):
 
     shift_frames('geocolor')
     output_path = os.path.join(OUTPUT_DIR, 'geocolor_00.png')
-    plt.savefig(output_path, dpi=150, transparent=True)
-    plt.close()
+    _save_png(output_path)
     print(f"  Saved (nighttime): {output_path}")
+
+
+# ---------------------------------------------------------------------------
+# Experimental precipitation rate product
+# ---------------------------------------------------------------------------
+
+def _precip_inputs(s3_client, scan_time):
+    """Gather the bands the precipitation estimator runs on.
+
+    Returns (bt13, x, y, sat_proj, bt9, bt15, prev, gap).  bt13 is None when
+    the required window channel is unavailable; every other input is optional
+    and simply disables the screen it feeds.
+    """
+    bt13, x, y, sat_proj = _download_band(s3_client, 13, scan_time)
+    if bt13 is None:
+        return None, None, None, None, None, None, None, 0
+
+    # Band 9 sharpens the deep-convection screen but is not required.
+    bt9, *_ = _download_band(s3_client, 9, scan_time)
+    if bt9 is None:
+        print("  WARNING: Band 9 unavailable; water-vapour screen disabled.")
+
+    # Band 15 gives the split-window thin-cirrus screen.
+    bt15, *_ = _download_band(s3_client, 15, scan_time)
+    if bt15 is None:
+        print("  WARNING: Band 15 unavailable; split-window screen disabled.")
+
+    prev_time, gap = get_previous_scan_time(s3_client, scan_time)
+    prev = None
+    if prev_time is not None:
+        prev, *_ = _download_band(s3_client, 13, prev_time)
+        if prev is None:
+            gap = 0
+
+    return bt13, x, y, sat_proj, bt9, bt15, prev, gap
+
+
+def process_precip(s3_client, scan_time):
+    """Render the experimental IR-derived precipitation rate (full disk)."""
+    print("\n--- Precipitation Rate (experimental, IR-derived) ---")
+
+    bt13, x, y, sat_proj, bt9, bt15, prev, gap = _precip_inputs(s3_client, scan_time)
+    if bt13 is None:
+        print("  ERROR: Missing Band 13. Skipping precipitation.")
+        return
+
+    km = _km_per_pixel(x)
+    rate = estimate_precip_rate(bt13, bt_wv=bt9, bt13_prev=prev,
+                                prev_minutes=gap, km_per_px=km, x=x, y=y,
+                                bt_split=bt15)
+    print(f"  Grid {rate.shape[0]}×{rate.shape[1]} @ {km:.1f} km/px — {_precip_stats(rate)}")
+
+    fig, ax = _make_figure()
+    ax.imshow(_precip_rgba(rate), origin='upper',
+              extent=(x[0], x[-1], y[-1], y[0]), transform=sat_proj,
+              interpolation='nearest')
+
+    shift_frames('precip')
+    output_path = os.path.join(OUTPUT_DIR, 'precip_00.png')
+    _save_png(output_path)
+    print(f"  Saved: {output_path}")
+
+
+def _render_sector_precip(precip_inputs, bounds, product_base):
+    """Render the precipitation estimate cropped to one cyclone sector.
+
+    The estimator runs on the cropped arrays rather than on a crop of the
+    full-disk result, so the texture window and the cooling trend are computed
+    at the sector's own sampling rather than inherited from the disk.
+    """
+    bt13, x, y, sat_proj, bt9, bt15, prev, gap = precip_inputs
+    if bt13 is None:
+        return
+
+    bt13s, xs, ys = _crop_band_to_sector(bt13, x, y, sat_proj, bounds)
+    bt9s  = _crop_band_to_sector(bt9,  x, y, sat_proj, bounds)[0] if bt9  is not None else None
+    bt15s = _crop_band_to_sector(bt15, x, y, sat_proj, bounds)[0] if bt15 is not None else None
+    prevs = _crop_band_to_sector(prev, x, y, sat_proj, bounds)[0] if prev is not None else None
+
+    km = _km_per_pixel(xs)
+    rate = estimate_precip_rate(bt13s, bt_wv=bt9s, bt13_prev=prevs,
+                                prev_minutes=gap, km_per_px=km, x=xs, y=ys,
+                                bt_split=bt15s)
+    print(f"    Precip: {rate.shape[0]}×{rate.shape[1]} @ {km:.1f} km/px — {_precip_stats(rate)}")
+
+    fig, ax = _make_figure_sector(bounds)
+    ax.imshow(_precip_rgba(rate), origin='upper',
+              extent=(xs[0], xs[-1], ys[-1], ys[0]), transform=sat_proj,
+              interpolation='nearest')
+
+    shift_frames(product_base)
+    _save_png(os.path.join(OUTPUT_DIR, f'{product_base}_00.png'), dpi=SECTOR_DPI)
+    print(f"    Saved sector precipitation.")
 
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
+def _guarded(label, fn, *args):
+    """Run a product renderer, reporting rather than raising on failure.
+
+    Returns True on success.  Any open figure is discarded so the next product
+    starts from a clean matplotlib state.
+    """
+    try:
+        fn(*args)
+        return True
+    except Exception as e:
+        print(f"\nWARNING: {label} failed: {e}")
+        import traceback
+        traceback.print_exc()
+        plt.close('all')
+        return False
+
 
 def main():
     print("Himawari-9 Satellite Image Processor")
@@ -968,10 +1548,17 @@ def main():
     # GeoColor — natural colour (day) or IR+city-lights composite (night)
     process_geocolor(s3, scan_time)
 
+    # The remaining products are the ones with outside dependencies — the
+    # experimental estimator and the JTWC storm feed — so a failure in either
+    # is contained here.  The whole run is committed as one unit, so letting
+    # an exception escape would discard the four full-disk images already
+    # rendered above and leave the site showing stale frames.
+    _guarded("precipitation rate", process_precip, s3, scan_time)
+
     # Cyclone sectors — high-resolution crops centred on each active storm
     print("\nFetching active storm data for cyclone sectors...")
     storms = fetch_active_storms()
-    process_cyclone_sectors(s3, scan_time, storms)
+    _guarded("cyclone sectors", process_cyclone_sectors, s3, scan_time, storms)
 
     # Write a plain-text timestamp so the website can show freshness
     ts_path = os.path.join(OUTPUT_DIR, 'last_updated.txt')

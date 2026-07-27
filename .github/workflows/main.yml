@@ -36,9 +36,60 @@ jobs:
 
       - name: Commit and Push Images to Repository
         run: |
+          BOT_EMAIL="github-actions[bot]@users.noreply.github.com"
+          SUBJECT_PREFIX="chore: update satellite images"
+
           git config user.name  "GitHub Actions Bot"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.email "$BOT_EMAIL"
           git add site/data/
+
           # Only commit if something actually changed
-          git diff --staged --quiet || git commit -m "chore: update satellite images [$(date -u '+%Y-%m-%d %H:%M UTC')]"
-          git push
+          if git diff --staged --quiet; then
+            echo "No image changes to commit."
+            exit 0
+          fi
+
+          MSG="$SUBJECT_PREFIX [$(date -u '+%Y-%m-%d %H:%M UTC')]"
+
+          # Every run rewrites each product's newest frame, and each frame is a
+          # fresh binary blob that git can never delta-compress against the
+          # last one.  Appending one commit per run therefore grew the
+          # repository without bound (tens of MB per cycle, every 10 minutes)
+          # until it would have reached the GitHub size quota.
+          #
+          # Imagery is disposable state, not history: nobody needs to read back
+          # the satellite picture from 40 minutes ago at a specific commit --
+          # the last ten frames of each product are already on disk as the
+          # animation buffer.  So amend the previous automated snapshot instead
+          # of stacking a new one, keeping exactly one generation of imagery
+          # reachable.  Superseded blobs become unreachable and are reclaimed
+          # by GitHub's periodic gc, so the repository holds steady instead of
+          # growing every ten minutes.
+          #
+          # Hand-written commits are never amended: if HEAD is anything other
+          # than this bot's own image commit, a normal commit is made instead.
+          PREV_SUBJECT="$(git log -1 --pretty=%s)"
+          PREV_AUTHOR_EMAIL="$(git log -1 --pretty=%ae)"
+
+          if [ "$PREV_AUTHOR_EMAIL" = "$BOT_EMAIL" ] && \
+             [ "${PREV_SUBJECT#$SUBJECT_PREFIX}" != "$PREV_SUBJECT" ]; then
+            echo "Amending previous image snapshot."
+            git commit --amend -m "$MSG"
+            # --force-with-lease refuses to clobber anything pushed since this
+            # job checked out. If it does refuse, the next run recovers, so
+            # never fall back to a plain --force here.
+            git push --force-with-lease
+          else
+            echo "Previous commit is not an automated image snapshot; adding a new commit."
+            git commit -m "$MSG"
+            git push
+          fi
+
+      - name: Report Working-Tree Size
+        if: always()
+        run: |
+          # Surfaced on every run so a regression in frame size is visible in
+          # the log long before it becomes a quota problem.
+          echo "site/data: $(du -sh site/data | cut -f1) across $(ls site/data | wc -l) files"
+          echo "largest frames:"
+          du -h site/data/* | sort -rh | head -5
