@@ -1,0 +1,25 @@
+{
+  "generated": "2026-11-01T00:52:19Z",
+  "sectors": [
+    {
+      "id": "WP3026",
+      "safe_id": "WP3026",
+      "name": null,
+      "basin": "WP",
+      "basin_name": "Western North Pacific",
+      "classification": "TY",
+      "classification_label": "Typhoon (Category 3)",
+      "wind_kt": 100,
+      "wind_mph": 115,
+      "pressure_mb": 0,
+      "lat": 22.9,
+      "lon": 144.0,
+      "bounds": [
+        136.0,
+        152.0,
+        14.899999999999999,
+        30.9
+      ]
+    }
+  ]
+}
