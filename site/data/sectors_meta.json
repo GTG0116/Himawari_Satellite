@@ -1,0 +1,25 @@
+{
+  "generated": "2026-11-21T23:32:40Z",
+  "sectors": [
+    {
+      "id": "SH0427",
+      "safe_id": "SH0427",
+      "name": "Xavier",
+      "basin": "SH",
+      "basin_name": "Southern Hemisphere",
+      "classification": "TS",
+      "classification_label": "Tropical Storm",
+      "wind_kt": 45,
+      "wind_mph": 52,
+      "pressure_mb": 0,
+      "lat": -11.9,
+      "lon": 194.4,
+      "bounds": [
+        186.4,
+        200,
+        -19.9,
+        -3.9000000000000004
+      ]
+    }
+  ]
+}
