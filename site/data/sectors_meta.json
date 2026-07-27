@@ -1,0 +1,25 @@
+{
+  "generated": "2026-11-07T22:22:34Z",
+  "sectors": [
+    {
+      "id": "WP3126",
+      "safe_id": "WP3126",
+      "name": "Cempaka",
+      "basin": "WP",
+      "basin_name": "Western North Pacific",
+      "classification": "TS",
+      "classification_label": "Tropical Storm",
+      "wind_kt": 60,
+      "wind_mph": 69,
+      "pressure_mb": 992,
+      "lat": 21.2,
+      "lon": 139.9,
+      "bounds": [
+        131.9,
+        147.9,
+        13.2,
+        29.2
+      ]
+    }
+  ]
+}
