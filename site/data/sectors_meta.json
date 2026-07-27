@@ -1,0 +1,45 @@
+{
+  "generated": "2026-10-12T05:42:33Z",
+  "sectors": [
+    {
+      "id": "WP2726",
+      "safe_id": "WP2726",
+      "name": "Koguma",
+      "basin": "WP",
+      "basin_name": "Western North Pacific",
+      "classification": "TY",
+      "classification_label": "Typhoon (Category 3)",
+      "wind_kt": 100,
+      "wind_mph": 115,
+      "pressure_mb": 954,
+      "lat": 28.3,
+      "lon": 147.3,
+      "bounds": [
+        139.3,
+        155.3,
+        20.3,
+        36.3
+      ]
+    },
+    {
+      "id": "WP2826",
+      "safe_id": "WP2826",
+      "name": "Twentyeigh",
+      "basin": "WP",
+      "basin_name": "Western North Pacific",
+      "classification": "TD",
+      "classification_label": "Tropical Depression",
+      "wind_kt": 25,
+      "wind_mph": 29,
+      "pressure_mb": 1006,
+      "lat": 16.4,
+      "lon": 150.8,
+      "bounds": [
+        142.8,
+        158.8,
+        8.399999999999999,
+        24.4
+      ]
+    }
+  ]
+}

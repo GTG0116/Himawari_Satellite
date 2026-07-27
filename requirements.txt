@@ -1,0 +1,7 @@
+boto3
+numpy
+matplotlib
+cartopy
+pillow
+scipy
+satpy
