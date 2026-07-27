@@ -1,0 +1,45 @@
+{
+  "generated": "2026-10-25T02:52:55Z",
+  "sectors": [
+    {
+      "id": "WP2926",
+      "safe_id": "WP2926",
+      "name": "Champi",
+      "basin": "WP",
+      "basin_name": "Western North Pacific",
+      "classification": "TS",
+      "classification_label": "Tropical Storm",
+      "wind_kt": 50,
+      "wind_mph": 58,
+      "pressure_mb": 987,
+      "lat": 29.0,
+      "lon": 124.7,
+      "bounds": [
+        116.7,
+        132.7,
+        21.0,
+        37.0
+      ]
+    },
+    {
+      "id": "WP3026",
+      "safe_id": "WP3026",
+      "name": null,
+      "basin": "WP",
+      "basin_name": "Western North Pacific",
+      "classification": "TS",
+      "classification_label": "Tropical Storm",
+      "wind_kt": 55,
+      "wind_mph": 63,
+      "pressure_mb": 991,
+      "lat": 11.5,
+      "lon": 165.3,
+      "bounds": [
+        157.3,
+        173.3,
+        3.5,
+        19.5
+      ]
+    }
+  ]
+}
